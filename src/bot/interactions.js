@@ -4,7 +4,8 @@ const {
   StringSelectMenuBuilder,
   ButtonBuilder,
   ButtonStyle,
-  MessageFlags
+  MessageFlags,
+  PermissionFlagsBits
 } = require('discord.js');
 const {
   getGuildState,
@@ -73,6 +74,9 @@ function getSlashCommands() {
         .addRoleOption(opt =>
           opt.setName('role').setDescription('Rôle Discord regroupant les joueurs de ce JDR').setRequired(true)
         )
+        .addUserOption(opt =>
+          opt.setName('mj').setDescription('Membre qui sera le Maître du Jeu de cette table (par défaut vous-même)').setRequired(false)
+        )
         .addStringOption(opt =>
           opt.setName('heure').setDescription('Heure par défaut (ex: 21h00)').setRequired(false)
         )
@@ -94,6 +98,17 @@ function getSlashCommands() {
     )
     .addSubcommand(sub =>
       sub
+        .setName('mj')
+        .setDescription('Changer le Maître du Jeu d’une table JDR')
+        .addRoleOption(opt =>
+          opt.setName('role').setDescription('Le rôle Discord du JDR').setRequired(true)
+        )
+        .addUserOption(opt =>
+          opt.setName('mj').setDescription('Le nouveau MJ pour cette table').setRequired(true)
+        )
+    )
+    .addSubcommand(sub =>
+      sub
         .setName('banniere')
         .setDescription('Modifier l’image de fond d’une table JDR existante')
         .addRoleOption(opt =>
@@ -109,7 +124,9 @@ function getSlashCommands() {
 
 function isUserMJ(interaction, campaign) {
   if (!campaign) return false;
-  return interaction.user.id === campaign.mjId;
+  if (interaction.user.id === campaign.mjId) return true;
+  if (interaction.memberPermissions && (interaction.memberPermissions.has(PermissionFlagsBits.Administrator) || interaction.memberPermissions.has(PermissionFlagsBits.ManageGuild))) return true;
+  return false;
 }
 
 function isUserInRole(interaction, campaign) {
@@ -326,6 +343,7 @@ async function handleInteraction(client, interaction) {
       if (sub === 'creer') {
         const title = interaction.options.getString('nom', true);
         const role = interaction.options.getRole('role', true);
+        const mjUser = interaction.options.getUser('mj');
         const time = interaction.options.getString('heure') || '21h00';
         const theme = interaction.options.getString('theme') || 'fantasy';
         const bannerAttachment = interaction.options.getAttachment('banniere');
@@ -339,8 +357,8 @@ async function handleInteraction(client, interaction) {
 
         const campaign = createCampaign(guildId, {
           title,
-          mjId: interaction.user.id,
-          mjName: interaction.member ? interaction.member.displayName : interaction.user.username,
+          mjId: mjUser ? mjUser.id : interaction.user.id,
+          mjName: mjUser ? (interaction.guild.members.cache.get(mjUser.id)?.displayName || mjUser.username) : (interaction.member ? interaction.member.displayName : interaction.user.username),
           roleId: role.id,
           roleName: `@${role.name}`,
           roleColor: role.hexColor !== '#000000' ? role.hexColor : '#f59e0b',
@@ -363,6 +381,30 @@ async function handleInteraction(client, interaction) {
           content: `Table **${campaign.title}** créée avec le rôle <@&${role.id}>.`,
           allowedMentions: { parse: [] }
         });
+        return;
+      }
+
+      if (sub === 'mj') {
+        const role = interaction.options.getRole('role', true);
+        const newMjUser = interaction.options.getUser('mj', true);
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+        const { guild: guildData } = getGuildState(guildId);
+        const target = guildData.campaigns.find(c => c.roleId === role.id);
+        if (!target) {
+          await interaction.editReply({ content: `Aucune table associée au rôle <@&>.` });
+          return;
+        }
+        if (!isUserMJ(interaction, target)) {
+          await interaction.editReply({ content: `Seul le MJ actuel ou un administrateur peut réassigner le MJ.` });
+          return;
+        }
+
+        const member = interaction.guild.members.cache.get(newMjUser.id);
+        const mjName = member ? member.displayName : newMjUser.username;
+        updateCampaignConfig(guildId, target.id, { mjId: newMjUser.id, mjName });
+        await refreshDashboardMessage(client, guildId);
+        await interaction.editReply({ content: `Le nouveau MJ de **** est maintenant <@>.` });
         return;
       }
 
@@ -561,10 +603,11 @@ async function handleInteraction(client, interaction) {
         if (restored) guildData = restored;
       }
 
-      const mjCampaigns = (guildData.campaigns || []).filter(c => c.mjId === interaction.user.id);
+      const isAdmin = interaction.memberPermissions && (interaction.memberPermissions.has(PermissionFlagsBits.Administrator) || interaction.memberPermissions.has(PermissionFlagsBits.ManageGuild));
+      const mjCampaigns = (guildData.campaigns || []).filter(c => c.mjId === interaction.user.id || isAdmin);
       if (mjCampaigns.length === 0) {
         await interaction.reply({
-          content: 'Seul le MJ créateur d’une table peut accéder à cet espace.',
+          content: 'Seul le MJ d’une table (ou un administrateur) peut accéder à cet espace.',
           flags: MessageFlags.Ephemeral
         });
         return;

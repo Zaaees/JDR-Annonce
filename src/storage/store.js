@@ -158,6 +158,8 @@ function updateCampaignConfig(guildId, campaignId, updates) {
   if (updates.time) c.time = parseTimeInput(updates.time).label;
   if (updates.theme) c.theme = updates.theme;
   if (updates.bannerUrl !== undefined) c.bannerUrl = updates.bannerUrl;
+  if (updates.mjId) c.mjId = updates.mjId;
+  if (updates.mjName) c.mjName = updates.mjName;
   if (updates.roleId) c.roleId = updates.roleId;
   if (updates.roleName) c.roleName = updates.roleName;
   if (updates.roleColor) c.roleColor = updates.roleColor;
