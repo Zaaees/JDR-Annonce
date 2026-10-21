@@ -1,7 +1,9 @@
 const {
   AttachmentBuilder,
   ActionRowBuilder,
-  StringSelectMenuBuilder
+  StringSelectMenuBuilder,
+  ButtonBuilder,
+  ButtonStyle
 } = require('discord.js');
 const {
   getGuildState,
@@ -13,23 +15,21 @@ const { renderDashboardBuffer } = require('../renderer/boardRenderer');
 const { embedStateInPng, extractStateFromPng } = require('../utils/pngState');
 
 /**
- * Récupère les membres humains possédant le @Rôle Discord d'une campagne.
+ * Récupère tous les membres humains possédant le @Rôle Discord d'une campagne.
  */
 async function getRolePlayers(discordGuild, campaign) {
   try {
+    await discordGuild.roles.fetch();
     await discordGuild.members.fetch();
   } catch {
     // Utilise le cache existant si rate-limited
   }
 
-  const role = discordGuild.roles.cache.get(campaign.roleId);
-  if (!role) {
-    return [];
-  }
-
   const players = [];
-  for (const [, member] of role.members) {
+  for (const [, member] of discordGuild.members.cache) {
     if (member.user.bot) continue;
+    if (!member.roles.cache.has(campaign.roleId)) continue;
+
     const votedDays = campaign.votes && Array.isArray(campaign.votes[member.id])
       ? campaign.votes[member.id]
       : null;
@@ -47,16 +47,18 @@ async function getRolePlayers(discordGuild, campaign) {
 }
 
 /**
- * Construit les composants sous l'image du Méga-Dashboard.
+ * Construit les composants sous l'image du Méga-Dashboard :
+ * - Ligne 1 : Menu déroulant pour les JOUEURS (voter sur une table)
+ * - Ligne 2 : Bouton séparé réservé uniquement au MJ (gérer sa table)
  */
 function buildDashboardComponents(campaigns) {
   if (!campaigns || campaigns.length === 0) {
     return [];
   }
 
-  const select = new StringSelectMenuBuilder()
+  const voteSelect = new StringSelectMenuBuilder()
     .setCustomId('select_campaign')
-    .setPlaceholder('Choisir une table...')
+    .setPlaceholder('Voter pour une table (Joueurs)...')
     .addOptions(
       campaigns.slice(0, 25).map(c => ({
         label: c.title.slice(0, 100),
@@ -65,7 +67,17 @@ function buildDashboardComponents(campaigns) {
       }))
     );
 
-  return [new ActionRowBuilder().addComponents(select)];
+  const mjButtonRow = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId('open_mj_menu')
+      .setLabel('Gérer une table (MJ)')
+      .setStyle(ButtonStyle.Secondary)
+  );
+
+  return [
+    new ActionRowBuilder().addComponents(voteSelect),
+    mjButtonRow
+  ];
 }
 
 /**
@@ -95,7 +107,6 @@ async function refreshDashboardMessage(client, guildId) {
   }
 
   const rawPngBuffer = await renderDashboardBuffer(enrichedCampaigns);
-  // Grave l'état JSON complet dans les métadonnées invisibles du PNG pour survivre aux redémarrages Render Free
   const pngBuffer = embedStateInPng(rawPngBuffer, guildData);
 
   const attachment = new AttachmentBuilder(pngBuffer, { name: 'sessions-jdr.png' });
@@ -145,19 +156,17 @@ async function tryRestoreStateFromMessage(guildId, message) {
 }
 
 /**
- * Au démarrage du bot (ex: après un redémarrage Render ayant vidé le disque local),
- * inspecte les salons des serveurs pour retrouver `sessions-jdr.png` et restaurer toutes les données.
+ * Au démarrage du bot, inspecte les salons des serveurs pour retrouver `sessions-jdr.png` et restaurer les données.
  */
 async function autoRecoverGuildsFromDiscord(client) {
   for (const [guildId, discordGuild] of client.guilds.cache) {
     const { guild: localGuild } = getGuildState(guildId);
     if (localGuild.campaigns && localGuild.campaigns.length > 0) {
-      continue; // Déjà présent sur le disque
+      continue;
     }
 
     try {
       const channels = await discordGuild.channels.fetch();
-      // Priorise les salons dont le nom évoque les sessions/annonces JDR
       const textChannels = Array.from(channels.values())
         .filter(ch => ch && ch.isTextBased && ch.isTextBased() && ch.viewable)
         .sort((a, b) => {

@@ -4,10 +4,6 @@ const {
   StringSelectMenuBuilder,
   ButtonBuilder,
   ButtonStyle,
-  ModalBuilder,
-  TextInputBuilder,
-  TextInputStyle,
-  PermissionFlagsBits,
   MessageFlags
 } = require('discord.js');
 const {
@@ -24,9 +20,7 @@ const {
 const {
   getWeekDaysFromMonday,
   formatFullDateFR,
-  formatDayMonthFR,
-  parseUserDateFR,
-  parseTimeInput
+  formatDayMonthFR
 } = require('../utils/dates');
 const {
   getRolePlayers,
@@ -94,15 +88,17 @@ function getSlashCommands() {
   return [jdrCmd.toJSON()];
 }
 
+/**
+ * Seul le créateur de la table (mjId) est considéré comme le MJ de cette table.
+ */
 function isUserMJ(interaction, campaign) {
   if (!campaign) return false;
-  if (interaction.user.id === campaign.mjId) return true;
-  if (interaction.memberPermissions && interaction.memberPermissions.has(PermissionFlagsBits.ManageGuild)) {
-    return true;
-  }
-  return false;
+  return interaction.user.id === campaign.mjId;
 }
 
+/**
+ * Vérifie si l'utilisateur possède le @Rôle des joueurs de la table.
+ */
 function isUserInRole(interaction, campaign) {
   if (!campaign || !campaign.roleId) return false;
   const memberRoles = interaction.member && interaction.member.roles;
@@ -117,99 +113,99 @@ function isUserInRole(interaction, campaign) {
 }
 
 /**
- * Construit le panneau éphémère lorsqu'un joueur ou le MJ sélectionne un JDR.
- * Aucun texte explicatif superflu : uniquement les sélecteurs et boutons d'action.
+ * Panneau strictement réservé aux JOUEURS du @Rôle :
+ * Uniquement la sélection de leurs jours disponibles + "Semaine prochaine".
  */
-function buildCampaignControlPanel(campaign, canVote, canManage) {
+function buildPlayerVotePanel(campaign, userId) {
+  const weekDays = getWeekDaysFromMonday(campaign.weekMondayISO);
+  const existingVote = campaign.votes && Array.isArray(campaign.votes[userId])
+    ? campaign.votes[userId]
+    : [];
+
+  const options = weekDays.map((d, idx) => ({
+    label: d.fullLabel,
+    value: String(idx),
+    default: existingVote.includes(idx)
+  }));
+
+  options.push({
+    label: 'Semaine prochaine',
+    value: 'NEXT_WEEK'
+  });
+
+  const voteSelect = new StringSelectMenuBuilder()
+    .setCustomId(`vote_days:${campaign.id}`)
+    .setPlaceholder('Sélectionner mes disponibilités...')
+    .setMinValues(1)
+    .setMaxValues(options.length)
+    .addOptions(options);
+
+  return {
+    content: `**${campaign.title}**`,
+    components: [new ActionRowBuilder().addComponents(voteSelect)],
+    allowedMentions: { parse: [] }
+  };
+}
+
+/**
+ * Panneau strictement réservé au MJ de la table :
+ * Définir/modifier le jour, relancer le sondage, terminer la session, retirer la date ou supprimer la table.
+ */
+function buildMJControlPanel(campaign) {
   const weekDays = getWeekDaysFromMonday(campaign.weekMondayISO);
   const rows = [];
 
-  // 1. Sélection de vote pour les membres du @Rôle (si sondage ouvert)
-  if (canVote && campaign.status === 'poll') {
-    const existingVote = campaign.votes && Array.isArray(campaign.votes[canVote.userId])
-      ? campaign.votes[canVote.userId]
-      : [];
-
-    const options = weekDays.map((d, idx) => ({
-      label: d.fullLabel,
-      value: String(idx),
-      default: existingVote.includes(idx)
-    }));
-
-    // Ajout de "Semaine prochaine" directement dans la sélection avec les jours de la semaine
-    options.push({
-      label: 'Semaine prochaine',
-      value: 'NEXT_WEEK'
-    });
-
-    const voteSelect = new StringSelectMenuBuilder()
-      .setCustomId(`vote_days:${campaign.id}`)
-      .setPlaceholder('Sélectionner mes disponibilités...')
-      .setMinValues(1)
-      .setMaxValues(options.length)
-      .addOptions(options);
-
-    rows.push(new ActionRowBuilder().addComponents(voteSelect));
-  }
-
-  // 2. Contrôles du MJ (choix rapide d'un jour de la semaine + boutons d'action)
-  if (canManage) {
-    const quickDaySelect = new StringSelectMenuBuilder()
-      .setCustomId(`mj_set_day:${campaign.id}`)
-      .setPlaceholder('Définir un jour de cette semaine...')
-      .addOptions(
-        weekDays.map(d => ({
-          label: `${d.fullLabel} (${campaign.time})`,
-          value: d.iso,
-          default: campaign.status === 'confirmed' && campaign.confirmedDateISO === d.iso
-        }))
-      );
-
-    rows.push(new ActionRowBuilder().addComponents(quickDaySelect));
-
-    const btnRow = new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId(`mj_modal_date:${campaign.id}`)
-        .setLabel('Autre date / heure')
-        .setStyle(ButtonStyle.Primary),
-      new ButtonBuilder()
-        .setCustomId(`mj_restart_poll:${campaign.id}`)
-        .setLabel('Relancer le sondage')
-        .setStyle(ButtonStyle.Secondary)
+  const quickDaySelect = new StringSelectMenuBuilder()
+    .setCustomId(`mj_set_day:${campaign.id}`)
+    .setPlaceholder('Définir la date de la session...')
+    .addOptions(
+      weekDays.map(d => ({
+        label: `${d.fullLabel} (${campaign.time})`,
+        value: d.iso,
+        default: campaign.status === 'confirmed' && campaign.confirmedDateISO === d.iso
+      }))
     );
 
-    if (campaign.status === 'confirmed') {
-      btnRow.addComponents(
-        new ButtonBuilder()
-          .setCustomId(`mj_session_done:${campaign.id}`)
-          .setLabel('Session terminée')
-          .setStyle(ButtonStyle.Success),
-        new ButtonBuilder()
-          .setCustomId(`mj_clear_date:${campaign.id}`)
-          .setLabel('Retirer la date')
-          .setStyle(ButtonStyle.Danger)
-      );
-    } else {
-      btnRow.addComponents(
-        new ButtonBuilder()
-          .setCustomId(`mj_delete:${campaign.id}`)
-          .setLabel('Supprimer la table')
-          .setStyle(ButtonStyle.Danger)
-      );
-    }
+  rows.push(new ActionRowBuilder().addComponents(quickDaySelect));
 
-    rows.push(btnRow);
+  const btnRow = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`mj_restart_poll:${campaign.id}`)
+      .setLabel('Relancer le sondage')
+      .setStyle(ButtonStyle.Secondary)
+  );
+
+  if (campaign.status === 'confirmed') {
+    btnRow.addComponents(
+      new ButtonBuilder()
+        .setCustomId(`mj_session_done:${campaign.id}`)
+        .setLabel('Session terminée')
+        .setStyle(ButtonStyle.Success),
+      new ButtonBuilder()
+        .setCustomId(`mj_clear_date:${campaign.id}`)
+        .setLabel('Retirer la date')
+        .setStyle(ButtonStyle.Danger)
+    );
   }
 
+  btnRow.addComponents(
+    new ButtonBuilder()
+      .setCustomId(`mj_delete:${campaign.id}`)
+      .setLabel('Supprimer la table')
+      .setStyle(ButtonStyle.Danger)
+  );
+
+  rows.push(btnRow);
+
   return {
-    content: `**${campaign.title}** (<@&${campaign.roleId}>)`,
+    content: `**${campaign.title}** — Gestion MJ`,
     components: rows,
     allowedMentions: { parse: [] }
   };
 }
 
 /**
- * Gère toutes les interactions Discord (Slash commands, SelectMenus, Buttons, Modals)
+ * Gère toutes les interactions Discord
  */
 async function handleInteraction(client, interaction) {
   try {
@@ -296,7 +292,7 @@ async function handleInteraction(client, interaction) {
     }
 
     // =========================================================================
-    // 2. SÉLECTION D'UNE TABLE SUR LE MÉGA-DASHBOARD
+    // 2. SÉLECTION D'UNE TABLE PAR UN JOUEUR (VOTE UNIQUEMENT)
     // =========================================================================
     if (interaction.isStringSelectMenu() && interaction.customId === 'select_campaign') {
       const guildId = interaction.guildId;
@@ -304,7 +300,6 @@ async function handleInteraction(client, interaction) {
       let { guild: guildData } = getGuildState(guildId);
       let campaign = guildData.campaigns.find(c => c.id === campaignId);
 
-      // Si Render a redémarré et que la mémoire locale était vide, restaure directement depuis l'image du message cliqué
       if (!campaign && interaction.message) {
         const restored = await tryRestoreStateFromMessage(guildId, interaction.message);
         if (restored) {
@@ -321,41 +316,97 @@ async function handleInteraction(client, interaction) {
         return;
       }
 
-      const memberHasRole = isUserInRole(interaction, campaign);
-      const userIsMJ = isUserMJ(interaction, campaign);
-
-      if (!memberHasRole && !userIsMJ) {
+      if (!isUserInRole(interaction, campaign)) {
         await interaction.reply({
-          content: `Seuls les membres du rôle <@&${campaign.roleId}> peuvent voter sur cette table.`,
+          content: `Seuls les joueurs possédant le rôle <@&${campaign.roleId}> peuvent voter sur cette table.`,
           flags: MessageFlags.Ephemeral,
           allowedMentions: { parse: [] }
         });
         return;
       }
 
-      const panel = buildCampaignControlPanel(
-        campaign,
-        memberHasRole ? { userId: interaction.user.id } : null,
-        userIsMJ
-      );
-
-      if (panel.components.length === 0) {
+      if (campaign.status !== 'poll') {
         await interaction.reply({
-          content: `**${campaign.title}** — Aucun sondage en cours.`,
+          content: `Aucun sondage en cours pour **${campaign.title}**.`,
           flags: MessageFlags.Ephemeral
         });
         return;
       }
 
+      const playerPanel = buildPlayerVotePanel(campaign, interaction.user.id);
       await interaction.reply({
-        ...panel,
+        ...playerPanel,
         flags: MessageFlags.Ephemeral
       });
       return;
     }
 
     // =========================================================================
-    // 3. VOTE D'UN JOUEUR DU @RÔLE (JOURS OU "SEMAINE PROCHAINE")
+    // 3. OUVERTURE DE L'ESPACE MJ (BOUTON SÉPARÉ RÉSERVÉ AU MJ)
+    // =========================================================================
+    if (interaction.isButton() && interaction.customId === 'open_mj_menu') {
+      const guildId = interaction.guildId;
+      let { guild: guildData } = getGuildState(guildId);
+
+      if ((!guildData.campaigns || guildData.campaigns.length === 0) && interaction.message) {
+        const restored = await tryRestoreStateFromMessage(guildId, interaction.message);
+        if (restored) guildData = restored;
+      }
+
+      const mjCampaigns = (guildData.campaigns || []).filter(c => c.mjId === interaction.user.id);
+      if (mjCampaigns.length === 0) {
+        await interaction.reply({
+          content: 'Seul le MJ créateur d’une table peut accéder à cet espace.',
+          flags: MessageFlags.Ephemeral
+        });
+        return;
+      }
+
+      if (mjCampaigns.length === 1) {
+        const mjPanel = buildMJControlPanel(mjCampaigns[0]);
+        await interaction.reply({
+          ...mjPanel,
+          flags: MessageFlags.Ephemeral
+        });
+        return;
+      }
+
+      // Si le MJ gère plusieurs tables, lui propose de choisir laquelle gérer
+      const selectMjTable = new StringSelectMenuBuilder()
+        .setCustomId('select_mj_campaign')
+        .setPlaceholder('Choisir la table à gérer...')
+        .addOptions(
+          mjCampaigns.slice(0, 25).map(c => ({
+            label: c.title.slice(0, 100),
+            value: c.id
+          }))
+        );
+
+      await interaction.reply({
+        components: [new ActionRowBuilder().addComponents(selectMjTable)],
+        flags: MessageFlags.Ephemeral
+      });
+      return;
+    }
+
+    if (interaction.isStringSelectMenu() && interaction.customId === 'select_mj_campaign') {
+      const guildId = interaction.guildId;
+      const campaignId = interaction.values[0];
+      const { guild: guildData } = getGuildState(guildId);
+      const campaign = guildData.campaigns.find(c => c.id === campaignId);
+
+      if (!campaign || !isUserMJ(interaction, campaign)) {
+        await interaction.update({ content: 'Action réservée au MJ.', components: [] });
+        return;
+      }
+
+      const mjPanel = buildMJControlPanel(campaign);
+      await interaction.update(mjPanel);
+      return;
+    }
+
+    // =========================================================================
+    // 4. VOTE D'UN JOUEUR DU @RÔLE (JOURS OU "SEMAINE PROCHAINE")
     // =========================================================================
     if (interaction.isStringSelectMenu() && interaction.customId.startsWith('vote_days:')) {
       const guildId = interaction.guildId;
@@ -413,11 +464,7 @@ async function handleInteraction(client, interaction) {
           result.campaign,
           `Nouveau sondage de disponibilité pour **${result.campaign.title}** (semaine du ${nextWeekDays[0].fullLabel}).`
         );
-        const updatedPanel = buildCampaignControlPanel(
-          result.campaign,
-          { userId: interaction.user.id },
-          isUserMJ(interaction, result.campaign)
-        );
+        const updatedPanel = buildPlayerVotePanel(result.campaign, interaction.user.id);
         await interaction.editReply({
           ...updatedPanel,
           content: `Passage à la semaine du **${nextWeekDays[0].fullLabel}**.`
@@ -438,7 +485,7 @@ async function handleInteraction(client, interaction) {
     }
 
     // =========================================================================
-    // 4. ACTIONS DU MJ (CHOIX RAPIDE DU JOUR, BOUTONS & MODAL)
+    // 5. ACTIONS DU MJ (DÉFINIR LE JOUR, RELANCER SONDAGE, TERMINER, SUPPRIMER)
     // =========================================================================
     if (interaction.isStringSelectMenu() && interaction.customId.startsWith('mj_set_day:')) {
       const guildId = interaction.guildId;
@@ -484,34 +531,6 @@ async function handleInteraction(client, interaction) {
           content: 'Action réservée au MJ de cette table.',
           flags: MessageFlags.Ephemeral
         });
-        return;
-      }
-
-      if (action === 'mj_modal_date') {
-        const modal = new ModalBuilder()
-          .setCustomId(`modal_set_date:${campaign.id}`)
-          .setTitle(`Date — ${campaign.title.slice(0, 30)}`);
-
-        const dateInput = new TextInputBuilder()
-          .setCustomId('date_input')
-          .setLabel('Date (JJ/MM/AAAA)')
-          .setPlaceholder('30/10/2026')
-          .setRequired(true)
-          .setStyle(TextInputStyle.Short);
-
-        const timeInput = new TextInputBuilder()
-          .setCustomId('time_input')
-          .setLabel('Heure (ex: 21h00)')
-          .setValue(campaign.time || '21h00')
-          .setRequired(true)
-          .setStyle(TextInputStyle.Short);
-
-        modal.addComponents(
-          new ActionRowBuilder().addComponents(dateInput),
-          new ActionRowBuilder().addComponents(timeInput)
-        );
-
-        await interaction.showModal(modal);
         return;
       }
 
@@ -570,44 +589,6 @@ async function handleInteraction(client, interaction) {
         });
         return;
       }
-    }
-
-    // =========================================================================
-    // 5. VALIDATION DU MODAL DE DATE PERSONNALISÉE
-    // =========================================================================
-    if (interaction.isModalSubmit() && interaction.customId.startsWith('modal_set_date:')) {
-      const guildId = interaction.guildId;
-      const campaignId = interaction.customId.split(':')[1];
-      const rawDate = interaction.fields.getTextInputValue('date_input');
-      const rawTime = interaction.fields.getTextInputValue('time_input');
-
-      const parsedISO = parseUserDateFR(rawDate);
-      if (!parsedISO) {
-        await interaction.reply({
-          content: 'Format de date invalide. Utilise le format JJ/MM/AAAA (ex: 30/10/2026).',
-          flags: MessageFlags.Ephemeral
-        });
-        return;
-      }
-
-      const normTime = parseTimeInput(rawTime).label;
-      await interaction.deferUpdate();
-
-      const updated = setManualSessionDate(guildId, campaignId, parsedISO, normTime);
-      await refreshDashboardMessage(client, guildId);
-
-      const dateStr = formatFullDateFR(updated.confirmedDateISO);
-      await sendRolePing(
-        client,
-        guildId,
-        updated,
-        `Session fixée pour **${updated.title}** : **${dateStr} à ${updated.time}**.`
-      );
-
-      await interaction.editReply({
-        content: `Date fixée au **${dateStr} à ${updated.time}**.`,
-        components: []
-      });
     }
   } catch (err) {
     console.error('Erreur interaction Discord:', err);
