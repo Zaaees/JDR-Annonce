@@ -10,8 +10,7 @@ if (!fs.existsSync(UPLOADS_DIR)) {
 }
 
 // Tokens temporaires pour sécuriser l'accès au recadrage
-// Map<token, { guildId, campaignId, imageUrl,
-    userId, expiresAt }>
+// Map<token, { guildId, campaignId, imageUrl, userId, expiresAt }>
 const cropSessions = new Map();
 
 function createCropSession(guildId, campaignId, imageUrl, userId = null) {
