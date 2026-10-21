@@ -3,7 +3,12 @@ const {
   ActionRowBuilder,
   StringSelectMenuBuilder,
   ButtonBuilder,
-  ButtonStyle
+  ButtonStyle,
+  ContainerBuilder,
+  MediaGalleryBuilder,
+  MediaGalleryItemBuilder,
+  TextDisplayBuilder,
+  MessageFlags
 } = require('discord.js');
 const {
   getGuildState,
@@ -11,7 +16,7 @@ const {
   setDashboardMessageId,
   setCampaignPingMessageId
 } = require('../storage/store');
-const { renderDashboardBuffer } = require('../renderer/boardRenderer');
+const { renderDashboardBuffer, renderCampaignCardBuffer } = require('../renderer/boardRenderer');
 const { embedStateInPng, extractStateFromPng } = require('../utils/pngState');
 
 /**
@@ -108,7 +113,9 @@ async function cleanupObsoleteChannelMessages(client, guildId, channel) {
 }
 
 /**
- * Régénère l'image du Méga-Dashboard et met à jour le message permanent dans le salon.
+ * Régénère l'affichage du Méga-Dashboard et met à jour le message permanent dans le salon.
+ * Utilise Discord Components V2 (Option B) : bannières larges empilées dans un seul message,
+ * avec boutons [Voter] et [Gérer (MJ)] intégrés directement sous chaque JDR.
  */
 async function refreshDashboardMessage(client, guildId) {
   const { guild: guildData } = getGuildState(guildId);
@@ -132,32 +139,116 @@ async function refreshDashboardMessage(client, guildId) {
     });
   }
 
-  const rawPngBuffer = await renderDashboardBuffer(enrichedCampaigns);
-  const pngBuffer = embedStateInPng(rawPngBuffer, guildData);
+  // Format Discord Components V2 (Option B) :
+  // Chaque JDR possède son propre Container avec sa bannière large et ses boutons dédiés
+  const files = [];
+  const containers = [];
 
-  const attachment = new AttachmentBuilder(pngBuffer, { name: 'sessions-jdr.png' });
-  const components = buildDashboardComponents(enrichedCampaigns);
+  if (enrichedCampaigns.length === 0) {
+    // Cas où aucune table n'est active
+    const rawPngBuffer = await renderDashboardBuffer([]);
+    const pngBuffer = embedStateInPng(rawPngBuffer, guildData);
+    files.push(new AttachmentBuilder(pngBuffer, { name: 'sessions-jdr.png' }));
+
+    const emptyText = new TextDisplayBuilder().setContent(
+      '### 🎲 Tableau des Sessions JDR\n*Aucune table JDR active pour le moment.*\n\nUtilisez la commande `/jdr creer` pour ouvrir les inscriptions d’une campagne !'
+    );
+    const emptyContainer = new ContainerBuilder()
+      .setAccentColor(0x3b82f6)
+      .addTextDisplayComponents(emptyText);
+    containers.push(emptyContainer);
+  } else {
+    for (let i = 0; i < enrichedCampaigns.length; i++) {
+      const c = enrichedCampaigns[i];
+      const rawCardBuffer = await renderCampaignCardBuffer(c, i);
+      // Intègre l'état complet du serveur dans les métadonnées PNG de la première image (pour Render Free)
+      const cardBuffer = (i === 0) ? embedStateInPng(rawCardBuffer, guildData) : rawCardBuffer;
+      const fileName = i === 0 ? 'sessions-jdr.png' : `sessions-jdr-${i}.png`;
+      files.push(new AttachmentBuilder(cardBuffer, { name: fileName }));
+
+      const hexColor = (c.roleColor && c.roleColor !== '#000000') ? c.roleColor : '#f59e0b';
+      const accentInt = parseInt(hexColor.replace('#', ''), 16) || 0xf59e0b;
+
+      const mediaItem = new MediaGalleryItemBuilder().setURL(`attachment://${fileName}`);
+      const mediaGallery = new MediaGalleryBuilder().addItems(mediaItem);
+
+      const buttonsRow = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`vote_open:${c.id}`)
+          .setLabel('🎲 Voter')
+          .setStyle(ButtonStyle.Primary),
+        new ButtonBuilder()
+          .setCustomId(`mj_open:${c.id}`)
+          .setLabel('Gérer (MJ)')
+          .setStyle(ButtonStyle.Secondary)
+      );
+
+      const container = new ContainerBuilder()
+        .setAccentColor(accentInt)
+        .addMediaGalleryComponents(mediaGallery);
+
+      // Si le nombre total de tables permet d'ajouter les boutons directement sous chaque carte (< 7 tables = < 40 composants)
+      if (enrichedCampaigns.length <= 6) {
+        container.addActionRowComponents(buttonsRow);
+      }
+      containers.push(container);
+    }
+
+    // Si plus de 6 tables, boutons regroupés en bas pour respecter la limite de 40 composants Discord
+    if (enrichedCampaigns.length > 6) {
+      const fallbackRows = buildDashboardComponents(enrichedCampaigns);
+      fallbackRows.forEach(r => containers.push(r));
+    }
+  }
 
   const payload = {
-    content: '',
-    files: [attachment],
-    components
+    content: null,
+    embeds: [],
+    files,
+    components: containers,
+    flags: [MessageFlags.IsComponentsV2]
   };
 
   let targetMsg = null;
   if (guildData.dashboardMessageId) {
     const existingMsg = await channel.messages.fetch(guildData.dashboardMessageId).catch(() => null);
     if (existingMsg) {
-      targetMsg = await existingMsg.edit(payload);
+      try {
+        targetMsg = await existingMsg.edit({
+          ...payload,
+          attachments: []
+        });
+      } catch (err) {
+        console.warn('[Dashboard] Échec edit V2 sur ancien message (probablement legacy). Recréation propre :', err?.message);
+        await existingMsg.delete().catch(() => null);
+        targetMsg = null;
+      }
     }
   }
 
   if (!targetMsg) {
-    targetMsg = await channel.send(payload);
-    setDashboardMessageId(guildId, targetMsg.id);
+    try {
+      targetMsg = await channel.send(payload);
+      setDashboardMessageId(guildId, targetMsg.id);
+    } catch (sendErr) {
+      console.error('[Dashboard] Erreur envoi Components V2, tentative repli legacy :', sendErr?.message);
+      // Fallback au mode legacy si Discord rejette Components V2 sur ce salon
+      const legacyRawBuffer = await renderDashboardBuffer(enrichedCampaigns);
+      const legacyBuffer = embedStateInPng(legacyRawBuffer, guildData);
+      const legacyAttachment = new AttachmentBuilder(legacyBuffer, { name: 'sessions-jdr.png' });
+      const legacyComponents = buildDashboardComponents(enrichedCampaigns);
+      targetMsg = await channel.send({
+        content: '',
+        files: [legacyAttachment],
+        components: legacyComponents
+      });
+      setDashboardMessageId(guildId, targetMsg.id);
+    }
   }
 
-  
+  // Nettoie tout message obsolète dans le salon
+  await cleanupObsoleteChannelMessages(client, guildId, channel).catch(() => null);
+
   return targetMsg;
 }
 
@@ -184,7 +275,7 @@ async function deleteCampaignPing(client, guildId, campaign) {
  */
 async function tryRestoreStateFromMessage(guildId, message) {
   if (!message || !message.attachments || message.attachments.size === 0) return null;
-  const att = message.attachments.find(a => a.name === 'sessions-jdr.png') || message.attachments.first();
+  const att = message.attachments.find(a => a.name && a.name.includes('sessions-jdr')) || message.attachments.first();
   if (!att || !att.url) return null;
 
   try {
@@ -231,7 +322,7 @@ async function autoRecoverGuildsFromDiscord(client) {
             m.author &&
             m.author.id === client.user.id &&
             m.attachments &&
-            m.attachments.some(a => a.name === 'sessions-jdr.png')
+            m.attachments.some(a => a.name && a.name.includes('sessions-jdr'))
         );
 
         if (botDashboardMsg) {

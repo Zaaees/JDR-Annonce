@@ -1,7 +1,7 @@
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
-const { renderDashboardBuffer } = require('./renderer/boardRenderer');
+const { renderDashboardBuffer, renderCampaignCardBuffer } = require('./renderer/boardRenderer');
 const { embedStateInPng, extractStateFromPng } = require('./utils/pngState');
 const {
   createCampaign,
@@ -76,6 +76,16 @@ async function runTests() {
   ]);
 
   assert.ok(Buffer.isBuffer(pngBuffer) && pngBuffer.length > 5000, 'Le buffer PNG généré doit être valide');
+
+  // Test du rendu individuel par table JDR (Option B : Components V2 / Galerie)
+  const singleCardBuffer = await renderCampaignCardBuffer({
+    ...res3.campaign,
+    players: [
+      { id: 'u1', name: 'Lyra', voted: true, days: [3, 5] },
+      { id: 'u2', name: 'Thorin', voted: true, days: [1, 3, 5] }
+    ]
+  }, 0);
+  assert.ok(Buffer.isBuffer(singleCardBuffer) && singleCardBuffer.length > 5000, 'Le buffer PNG de la carte individuelle doit être valide');
 
   // 4. Test de la sauvegarde et restauration d'état intégrée dans les métadonnées du PNG (pour Render Free)
   const { guild: guildStateBefore } = getGuildState(testGuildId);

@@ -227,11 +227,14 @@ function drawPlayerToken(ctx, player, cx, cy, radius, borderColor, alpha = 1) {
  * - Concept 1 : Fond 100 % transparent entre les cartes, grand espacement (52px), cadre & liseré gauche à la couleur du @Rôle
  * - Concept 2 : Carte en 2 étages (Bannière illustrée 100 % dégagée en haut + Tiroir calendrier dédié en bas)
  */
+const CARD_W = 1000;
+const BANNER_H = 225; // Étage 1 : Bannière pure
+const DRAWER_H = 165; // Étage 2 : Tiroir calendrier sous la bannière
+const CARD_H = BANNER_H + DRAWER_H;
+
 async function renderDashboardBuffer(enrichedCampaigns) {
-  const width = 1000;
-  const bannerH = 225; // Étage 1 : Bannière pure
-  const drawerH = 155; // Étage 2 : Tiroir calendrier sous la bannière
-  const cardH = bannerH + drawerH; // 380px par JDR
+  const width = CARD_W;
+  const cardH = CARD_H;
   const gap = 52; // Grand espace transparent entre chaque JDR
   const pad = 12;
 
@@ -252,8 +255,25 @@ async function renderDashboardBuffer(enrichedCampaigns) {
     return emptyCanvas.toBuffer('image/png');
   }
 
+  await preloadCampaignAssets(enrichedCampaigns);
+
+  const totalH = pad * 2 + enrichedCampaigns.length * cardH + (enrichedCampaigns.length - 1) * gap;
+  const canvas = createCanvas(width, totalH);
+  const ctx = canvas.getContext('2d');
+
+  // Fond global 100 % transparent pour séparer visuellement chaque carte
+  ctx.clearRect(0, 0, width, totalH);
+
+  enrichedCampaigns.forEach((c, index) => {
+    drawCampaignCard(ctx, c, index, pad, pad + index * (cardH + gap), width - pad * 2, true);
+  });
+
+  return canvas.toBuffer('image/png');
+}
+
+async function preloadCampaignAssets(campaigns) {
   await Promise.all(
-    enrichedCampaigns.map(async c => {
+    campaigns.map(async c => {
       if (c.bannerUrl) {
         c.bannerImg = await fetchCachedImage(c.bannerUrl);
       }
@@ -268,28 +288,25 @@ async function renderDashboardBuffer(enrichedCampaigns) {
       }
     })
   );
+}
 
-  const totalH = pad * 2 + enrichedCampaigns.length * cardH + (enrichedCampaigns.length - 1) * gap;
-  const canvas = createCanvas(width, totalH);
-  const ctx = canvas.getContext('2d');
-
-  // Concept 1 : Fond global 100 % transparent pour que Discord sépare visuellement chaque carte
-  ctx.clearRect(0, 0, width, totalH);
-
-  enrichedCampaigns.forEach((c, index) => {
-    const x = pad;
-    const y = pad + index * (cardH + gap);
-    const w = width - pad * 2;
-    const h = cardH;
+/**
+ * Dessine une carte JDR complète (bannière en haut + tiroir calendrier en bas).
+ */
+function drawCampaignCard(ctx, c, index, x, y, w, h = CARD_H, withShadow = true) {
+    const bannerH = BANNER_H;
+    const drawerH = h - bannerH;
     const accentColor = c.roleColor || '#f59e0b';
     const weekDays = getWeekDaysFromMonday(c.weekMondayISO);
     const players = c.players || [];
 
-    // Ombre portée externe sous chaque carte JDR
+    // Ombre portée externe sous la carte (uniquement en mode image empilée)
     ctx.save();
-    ctx.shadowColor = 'rgba(0, 0, 0, 0.65)';
-    ctx.shadowBlur = 16;
-    ctx.shadowOffsetY = 6;
+    if (withShadow) {
+      ctx.shadowColor = 'rgba(0, 0, 0, 0.65)';
+      ctx.shadowBlur = 16;
+      ctx.shadowOffsetY = 6;
+    }
     roundRect(ctx, x, y, w, h, 16);
     ctx.fillStyle = '#0d0f14';
     ctx.fill();
@@ -348,19 +365,19 @@ async function renderDashboardBuffer(enrichedCampaigns) {
     ctx.shadowOffsetX = 0;
     ctx.shadowOffsetY = 3;
     ctx.fillStyle = '#ffffff';
-    ctx.font = '900 38px Georgia, serif';
-    ctx.fillText(c.title, x + 32, y + 54);
+    ctx.font = '900 46px Georgia, serif';
+    ctx.fillText(c.title, x + 32, y + 60);
     ctx.restore();
 
     // Badge @Rôle & MJ
     const roleLabel = c.roleName.startsWith('@') ? c.roleName : `@${c.roleName}`;
     const mjLabel = `MJ : ${c.mjName}`;
-    ctx.font = '700 20px sans-serif';
+    ctx.font = '700 24px sans-serif';
     const roleWidth = ctx.measureText(roleLabel).width;
     const mjWidth = ctx.measureText(mjLabel).width;
-    const badgeW = roleWidth + mjWidth + 50;
+    const badgeW = roleWidth + mjWidth + 58;
 
-    roundRect(ctx, x + 32, y + 70, badgeW, 38, 9);
+    roundRect(ctx, x + 32, y + 76, badgeW, 44, 10);
     ctx.fillStyle = 'rgba(10, 12, 18, 0.85)';
     ctx.fill();
     ctx.strokeStyle = hexToRgba(accentColor, 0.55);
@@ -368,13 +385,13 @@ async function renderDashboardBuffer(enrichedCampaigns) {
     ctx.stroke();
 
     ctx.fillStyle = accentColor;
-    ctx.fillText(roleLabel, x + 46, y + 96);
+    ctx.fillText(roleLabel, x + 46, y + 106);
 
     ctx.fillStyle = 'rgba(255, 255, 255, 0.45)';
-    ctx.fillText('·', x + 54 + roleWidth, y + 96);
+    ctx.fillText('·', x + 56 + roleWidth, y + 106);
 
     ctx.fillStyle = '#ffffff';
-    ctx.fillText(mjLabel, x + 66 + roleWidth, y + 96);
+    ctx.fillText(mjLabel, x + 72 + roleWidth, y + 106);
 
     // Avatars des membres du @Rôle en haut à droite sur la bannière
     let curX = x + w - 28;
@@ -418,16 +435,16 @@ async function renderDashboardBuffer(enrichedCampaigns) {
       ctx.stroke();
 
       ctx.fillStyle = '#34d399';
-      ctx.font = '800 16px sans-serif';
-      ctx.fillText('PROCHAINE SESSION', x + 48, drawerY + 52);
+      ctx.font = '800 20px sans-serif';
+      ctx.fillText('PROCHAINE SESSION', x + 48, drawerY + 56);
 
       ctx.fillStyle = '#ffffff';
-      ctx.font = '900 34px sans-serif';
-      ctx.fillText(`${fullDateStr}  —  ${c.time}`, x + 48, drawerY + 102);
+      ctx.font = '900 40px sans-serif';
+      ctx.fillText(`${fullDateStr}  —  ${c.time}`, x + 48, drawerY + 112);
 
       let tokenX = x + w - 64;
       players.slice().reverse().forEach(p => {
-        drawPlayerToken(ctx, p, tokenX, drawerY + 78, 26, '#34d399', 1);
+        drawPlayerToken(ctx, p, tokenX, drawerY + 84, 28, '#34d399', 1);
         tokenX -= 44;
       });
     } else if (c.status === 'unavailable' && c.unavailableUntilISO) {
@@ -441,8 +458,8 @@ async function renderDashboardBuffer(enrichedCampaigns) {
       ctx.stroke();
 
       ctx.fillStyle = '#fda4af';
-      ctx.font = '800 28px sans-serif';
-      ctx.fillText(`Joueurs non disponibles jusqu'au ${untilStr}.`, x + 48, drawerY + 88);
+      ctx.font = '800 32px sans-serif';
+      ctx.fillText(`Joueurs non disponibles jusqu'au ${untilStr}.`, x + 48, drawerY + 96);
     } else {
       // Grille des 7 jours dans le tiroir inférieur
       const gridX = x + 28;
@@ -465,50 +482,58 @@ async function renderDashboardBuffer(enrichedCampaigns) {
         ctx.stroke();
 
         ctx.fillStyle = isFull ? '#34d399' : '#ffffff';
-        ctx.font = '800 18px sans-serif';
+        ctx.font = '800 23px sans-serif';
         ctx.textAlign = 'center';
-        ctx.fillText(`${d.code} ${d.dayNum}`, cx + colW / 2, gridY + 28);
+        ctx.fillText(`${d.code} ${d.dayNum}`, cx + colW / 2, gridY + 32);
 
         ctx.strokeStyle = 'rgba(255,255,255,0.1)';
         ctx.beginPath();
-        ctx.moveTo(cx + 10, gridY + 38);
-        ctx.lineTo(cx + colW - 10, gridY + 38);
+        ctx.moveTo(cx + 10, gridY + 44);
+        ctx.lineTo(cx + colW - 10, gridY + 44);
         ctx.stroke();
 
         if (availPlayers.length === 0) {
           ctx.fillStyle = 'rgba(255,255,255,0.25)';
           ctx.font = '700 16px sans-serif';
-          ctx.fillText('—', cx + colW / 2, gridY + 86);
+          ctx.fillText('—', cx + colW / 2, gridY + 96);
         } else {
-          const r = 19;
+          const r = 21;
           const spacing = Math.min(28, (colW - 38) / Math.max(1, availPlayers.length - 1));
           const totalRowW = (availPlayers.length - 1) * spacing;
           const startAvX = cx + colW / 2 - totalRowW / 2;
 
           availPlayers.forEach((p, idx) => {
-            drawPlayerToken(ctx, p, startAvX + idx * spacing, gridY + 80, r, accentColor, 1);
+            drawPlayerToken(ctx, p, startAvX + idx * spacing, gridY + 90, r, accentColor, 1);
           });
         }
         ctx.textAlign = 'left';
       });
     }
 
-    // Barre latérale gauche franche de 8px à la couleur du @Rôle sur toute la hauteur de la carte
-    ctx.fillStyle = accentColor;
-    ctx.fillRect(x, y, 8, h);
+    ctx.restore();
 
     // Cadre extérieur coloré à la couleur du @Rôle
     roundRect(ctx, x, y, w, h, 16);
-    ctx.strokeStyle = hexToRgba(accentColor, 0.85);
+    ctx.strokeStyle = hexToRgba(accentColor, 0.9);
     ctx.lineWidth = 3;
     ctx.stroke();
+}
 
-    ctx.restore();
-  });
-
+/**
+ * Génère l'image PNG d'une seule table JDR (format bannière large),
+ * pour qu'elle soit affichée en grand dans la galerie du message Discord.
+ */
+async function renderCampaignCardBuffer(campaign, index = 0) {
+  await preloadCampaignAssets([campaign]);
+  const canvas = createCanvas(CARD_W, CARD_H);
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, CARD_W, CARD_H);
+  const pad = 3;
+  drawCampaignCard(ctx, campaign, index, pad, pad, CARD_W - pad * 2, CARD_H - pad * 2, false);
   return canvas.toBuffer('image/png');
 }
 
 module.exports = {
-  renderDashboardBuffer
+  renderDashboardBuffer,
+  renderCampaignCardBuffer
 };

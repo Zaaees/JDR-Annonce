@@ -448,7 +448,115 @@ async function handleInteraction(client, interaction) {
     }
 
     // =========================================================================
-    // 2. SÉLECTION D'UNE TABLE PAR UN JOUEUR
+    // 2. BOUTONS DIRECTS JOUEUR ET MJ SOUS CHAQUE CARTE JDR (Option B)
+    // =========================================================================
+    if (interaction.isButton() && interaction.customId.startsWith('vote_open:')) {
+      const campaignId = interaction.customId.split(':')[1];
+      const guildId = interaction.guildId;
+      let { guild: guildData } = getGuildState(guildId);
+      let campaign = guildData.campaigns.find(c => c.id === campaignId);
+
+      if (!campaign && interaction.message) {
+        const restored = await tryRestoreStateFromMessage(guildId, interaction.message);
+        if (restored) {
+          guildData = restored;
+          campaign = guildData.campaigns.find(c => c.id === campaignId);
+        }
+      }
+
+      if (!campaign) {
+        await interaction.reply({
+          content: 'Cette table n’existe plus.',
+          flags: MessageFlags.Ephemeral
+        });
+        return;
+      }
+
+      if (!isUserInRole(interaction, campaign)) {
+        await interaction.reply({
+          content: `Seuls les joueurs possédant le rôle <@&${campaign.roleId}> peuvent voter sur cette table.`,
+          flags: MessageFlags.Ephemeral,
+          allowedMentions: { parse: [] }
+        });
+        return;
+      }
+
+      if (campaign.status === 'confirmed' && campaign.confirmedDateISO) {
+        const dateStr = formatFullDateFR(campaign.confirmedDateISO);
+        await interaction.reply({
+          content: `La prochaine session pour **${campaign.title}** est déjà fixée au **${dateStr} à ${campaign.time}**.`,
+          flags: MessageFlags.Ephemeral
+        });
+        return;
+      }
+
+      if (campaign.status === 'unavailable' && campaign.unavailableUntilISO) {
+        const untilStr = formatDayMonthFR(campaign.unavailableUntilISO);
+        await interaction.reply({
+          content: `Les joueurs ne sont pas disponibles pour **${campaign.title}** jusqu'au **${untilStr}**. Le MJ peut relancer le sondage à tout moment via son espace MJ.`,
+          flags: MessageFlags.Ephemeral
+        });
+        return;
+      }
+
+      if (campaign.status !== 'poll') {
+        await interaction.reply({
+          content: `Aucun sondage en cours pour **${campaign.title}**.`,
+          flags: MessageFlags.Ephemeral
+        });
+        return;
+      }
+
+      draftSelections.delete(getDraftKey(campaign.id, interaction.user.id));
+      const playerPanel = buildPlayerVotePanel(campaign, interaction.user.id);
+      await interaction.reply({
+        ...playerPanel,
+        flags: MessageFlags.Ephemeral
+      });
+      return;
+    }
+
+    if (interaction.isButton() && interaction.customId.startsWith('mj_open:')) {
+      const campaignId = interaction.customId.split(':')[1];
+      const guildId = interaction.guildId;
+      let { guild: guildData } = getGuildState(guildId);
+      let campaign = guildData.campaigns.find(c => c.id === campaignId);
+
+      if (!campaign && interaction.message) {
+        const restored = await tryRestoreStateFromMessage(guildId, interaction.message);
+        if (restored) {
+          guildData = restored;
+          campaign = guildData.campaigns.find(c => c.id === campaignId);
+        }
+      }
+
+      if (!campaign) {
+        await interaction.reply({
+          content: 'Cette table n’existe plus.',
+          flags: MessageFlags.Ephemeral
+        });
+        return;
+      }
+
+      if (!isUserMJ(interaction, campaign)) {
+        await interaction.reply({
+          content: `Action réservée au MJ de cette table (<@${campaign.mjId}>) ou à un administrateur.`,
+          flags: MessageFlags.Ephemeral,
+          allowedMentions: { parse: [] }
+        });
+        return;
+      }
+
+      const mjPanel = buildMJControlPanel(campaign);
+      await interaction.reply({
+        ...mjPanel,
+        flags: MessageFlags.Ephemeral
+      });
+      return;
+    }
+
+    // =========================================================================
+    // 2b. SÉLECTION D'UNE TABLE PAR UN JOUEUR (MENU DÉROULANT LEGACY)
     // =========================================================================
     if (interaction.isStringSelectMenu() && interaction.customId === 'select_campaign') {
       const guildId = interaction.guildId;
