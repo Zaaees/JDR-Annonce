@@ -90,19 +90,6 @@ function getSlashCommands() {
         .addAttachmentOption(opt =>
           opt.setName('banniere').setDescription('Image de fond personnalisée pour la bannière de ce JDR').setRequired(false)
         )
-        .addStringOption(opt =>
-          opt
-            .setName('cadrage')
-            .setDescription('Cadrage de l’image personnalisée')
-            .setRequired(false)
-            .addChoices(
-              { name: 'Centré (par défaut)', value: 'center' },
-              { name: 'Haut (privilégier le haut de l’image)', value: 'top' },
-              { name: 'Bas (privilégier le bas de l’image)', value: 'bottom' },
-              { name: 'Gauche', value: 'left' },
-              { name: 'Droite', value: 'right' }
-            )
-        )
     )
     .addSubcommand(sub =>
       sub
@@ -113,19 +100,6 @@ function getSlashCommands() {
         )
         .addAttachmentOption(opt =>
           opt.setName('image').setDescription('La nouvelle image de bannière').setRequired(true)
-        )
-        .addStringOption(opt =>
-          opt
-            .setName('cadrage')
-            .setDescription('Cadrage de l’image personnalisée')
-            .setRequired(false)
-            .addChoices(
-              { name: 'Centré (par défaut)', value: 'center' },
-              { name: 'Haut (privilégier le haut de l’image)', value: 'top' },
-              { name: 'Bas (privilégier le bas de l’image)', value: 'bottom' },
-              { name: 'Gauche', value: 'left' },
-              { name: 'Droite', value: 'right' }
-            )
         )
     );
 
@@ -354,7 +328,6 @@ async function handleInteraction(client, interaction) {
         const time = interaction.options.getString('heure') || '21h00';
         const theme = interaction.options.getString('theme') || 'fantasy';
         const bannerAttachment = interaction.options.getAttachment('banniere');
-        const bannerFit = interaction.options.getString('cadrage') || 'center';
 
         await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
@@ -372,8 +345,7 @@ async function handleInteraction(client, interaction) {
           roleColor: role.hexColor !== '#000000' ? role.hexColor : '#f59e0b',
           theme,
           time,
-          bannerUrl: bannerAttachment ? bannerAttachment.url : null,
-          bannerFit
+          bannerUrl: bannerAttachment ? bannerAttachment.url : null
         });
 
         await refreshDashboardMessage(client, guildId);
@@ -396,7 +368,6 @@ async function handleInteraction(client, interaction) {
       if (sub === 'banniere') {
         const role = interaction.options.getRole('role', true);
         const image = interaction.options.getAttachment('image', true);
-        const bannerFit = interaction.options.getString('cadrage') || 'center';
         await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
         const { guild: guildData } = getGuildState(guildId);
@@ -410,7 +381,7 @@ async function handleInteraction(client, interaction) {
           return;
         }
 
-        updateCampaignConfig(guildId, target.id, { bannerUrl: image.url, bannerFit });
+        updateCampaignConfig(guildId, target.id, { bannerUrl: image.url });
         await refreshDashboardMessage(client, guildId);
         await interaction.editReply({ content: `Bannière mise à jour pour **${target.title}**.` });
         return;
