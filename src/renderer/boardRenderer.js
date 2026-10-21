@@ -222,8 +222,8 @@ function drawPlayerToken(ctx, player, cx, cy, radius, borderColor, alpha = 1) {
  */
 async function renderDashboardBuffer(enrichedCampaigns) {
   const width = 1000;
-  const cardH = 215;
-  const gap = 18;
+  const cardH = 290;
+  const gap = 20;
   const pad = 24;
 
   if (!enrichedCampaigns || enrichedCampaigns.length === 0) {
@@ -301,20 +301,19 @@ async function renderDashboardBuffer(enrichedCampaigns) {
       drawProceduralArtwork(ctx, x, y, w, h, c.theme || 'fantasy', index + 1);
     }
 
-    // 2. Fondus sombres pour une lisibilité parfaite
-    const gradX = ctx.createLinearGradient(x, y, x + w, y);
-    gradX.addColorStop(0, 'rgba(10, 11, 15, 0.92)');
-    gradX.addColorStop(0.55, 'rgba(10, 11, 15, 0.65)');
-    gradX.addColorStop(1, 'rgba(10, 11, 15, 0.3)');
-    ctx.fillStyle = gradX;
-    ctx.fillRect(x, y, w, h);
+    // 2. Fondus légers pour faire ressortir l'image tout en assurant la lisibilité du texte
+    // Dégradé sombre doux uniquement en haut (derrière titre et avatars) et en bas (derrière les cases)
+    const topGrad = ctx.createLinearGradient(x, y, x, y + 90);
+    topGrad.addColorStop(0, 'rgba(10, 11, 15, 0.75)');
+    topGrad.addColorStop(1, 'rgba(10, 11, 15, 0.05)');
+    ctx.fillStyle = topGrad;
+    ctx.fillRect(x, y, w, 90);
 
-    const gradY = ctx.createLinearGradient(x, y, x, y + h);
-    gradY.addColorStop(0, 'rgba(10, 11, 15, 0.1)');
-    gradY.addColorStop(0.5, 'rgba(10, 11, 15, 0.65)');
-    gradY.addColorStop(1, 'rgba(10, 11, 15, 0.96)');
-    ctx.fillStyle = gradY;
-    ctx.fillRect(x, y, w, h);
+    const bottomGrad = ctx.createLinearGradient(x, y + h - 160, x, y + h);
+    bottomGrad.addColorStop(0, 'rgba(10, 11, 15, 0.1)');
+    bottomGrad.addColorStop(1, 'rgba(10, 11, 15, 0.85)');
+    ctx.fillStyle = bottomGrad;
+    ctx.fillRect(x, y + h - 160, w, 160);
 
     // 3. Titre du JDR + @Rôle Discord + MJ
     ctx.fillStyle = '#ffffff';
@@ -348,47 +347,47 @@ async function renderDashboardBuffer(enrichedCampaigns) {
     if (c.status === 'confirmed' && c.confirmedDateISO) {
       const fullDateStr = formatFullDateFR(c.confirmedDateISO).toUpperCase();
 
-      roundRect(ctx, x + 24, y + 92, w - 48, 98, 10);
-      ctx.fillStyle = 'rgba(16, 185, 129, 0.12)';
+      roundRect(ctx, x + 24, y + 155, w - 48, 110, 10);
+      ctx.fillStyle = 'rgba(16, 185, 129, 0.18)';
       ctx.fill();
-      ctx.strokeStyle = 'rgba(52, 211, 153, 0.45)';
+      ctx.strokeStyle = 'rgba(52, 211, 153, 0.55)';
       ctx.lineWidth = 1.5;
       ctx.stroke();
 
       ctx.fillStyle = '#34d399';
-      ctx.font = '700 12px sans-serif';
-      ctx.fillText('PROCHAINE SESSION', x + 44, y + 122);
+      ctx.font = '700 13px sans-serif';
+      ctx.fillText('PROCHAINE SESSION', x + 44, y + 190);
 
       ctx.fillStyle = '#ffffff';
-      ctx.font = '800 28px sans-serif';
-      ctx.fillText(`${fullDateStr}  —  ${c.time}`, x + 44, y + 160);
+      ctx.font = '800 30px sans-serif';
+      ctx.fillText(`${fullDateStr}  —  ${c.time}`, x + 44, y + 234);
 
       let tokenX = x + w - 56;
       players.slice().reverse().forEach(p => {
-        drawPlayerToken(ctx, p, tokenX, y + 141, 22, '#34d399', 1);
-        tokenX -= 36;
+        drawPlayerToken(ctx, p, tokenX, y + 210, 24, '#34d399', 1);
+        tokenX -= 40;
       });
     } else if (c.status === 'unavailable' && c.unavailableUntilISO) {
       const untilStr = formatDayMonthFR(c.unavailableUntilISO);
 
-      roundRect(ctx, x + 24, y + 92, w - 48, 98, 10);
-      ctx.fillStyle = 'rgba(244, 63, 94, 0.12)';
+      roundRect(ctx, x + 24, y + 155, w - 48, 110, 10);
+      ctx.fillStyle = 'rgba(244, 63, 94, 0.18)';
       ctx.fill();
-      ctx.strokeStyle = 'rgba(244, 63, 94, 0.4)';
+      ctx.strokeStyle = 'rgba(244, 63, 94, 0.5)';
       ctx.lineWidth = 1.5;
       ctx.stroke();
 
       ctx.fillStyle = '#fda4af';
-      ctx.font = '700 22px sans-serif';
-      ctx.fillText(`Joueurs non disponibles jusqu'au ${untilStr}.`, x + 44, y + 148);
+      ctx.font = '700 24px sans-serif';
+      ctx.fillText(`Joueurs non disponibles jusqu'au ${untilStr}.`, x + 44, y + 218);
     } else {
       // Sondage en cours : 7 colonnes (LUN .. DIM) avec les jetons des joueurs disponibles
       const gridX = x + 24;
-      const gridY = y + 84;
+      const gridY = y + 150;
       const gridW = w - 48;
       const colGap = 8;
       const colW = (gridW - colGap * 6) / 7;
-      const colH = 108;
+      const colH = 116;
 
       weekDays.forEach((d, dayIdx) => {
         const cx = gridX + dayIdx * (colW + colGap);
@@ -396,35 +395,35 @@ async function renderDashboardBuffer(enrichedCampaigns) {
         const isFull = availPlayers.length === players.length && players.length > 0;
 
         roundRect(ctx, cx, gridY, colW, colH, 8);
-        ctx.fillStyle = isFull ? 'rgba(16, 185, 129, 0.22)' : 'rgba(17, 19, 25, 0.82)';
+        ctx.fillStyle = isFull ? 'rgba(16, 185, 129, 0.28)' : 'rgba(17, 19, 25, 0.82)';
         ctx.fill();
-        ctx.strokeStyle = isFull ? '#34d399' : 'rgba(255, 255, 255, 0.1)';
+        ctx.strokeStyle = isFull ? '#34d399' : 'rgba(255, 255, 255, 0.12)';
         ctx.lineWidth = 1;
         ctx.stroke();
 
         ctx.fillStyle = isFull ? '#34d399' : '#e2e8f0';
         ctx.font = '700 13px sans-serif';
         ctx.textAlign = 'center';
-        ctx.fillText(`${d.code} ${d.dayNum}`, cx + colW / 2, gridY + 22);
+        ctx.fillText(`${d.code} ${d.dayNum}`, cx + colW / 2, gridY + 24);
 
-        ctx.strokeStyle = 'rgba(255,255,255,0.07)';
+        ctx.strokeStyle = 'rgba(255,255,255,0.08)';
         ctx.beginPath();
-        ctx.moveTo(cx + 10, gridY + 32);
-        ctx.lineTo(cx + colW - 10, gridY + 32);
+        ctx.moveTo(cx + 10, gridY + 34);
+        ctx.lineTo(cx + colW - 10, gridY + 34);
         ctx.stroke();
 
         if (availPlayers.length === 0) {
-          ctx.fillStyle = 'rgba(255,255,255,0.18)';
+          ctx.fillStyle = 'rgba(255,255,255,0.2)';
           ctx.font = '500 12px sans-serif';
-          ctx.fillText('—', cx + colW / 2, gridY + 72);
+          ctx.fillText('—', cx + colW / 2, gridY + 76);
         } else {
-          const r = 14;
-          const spacing = Math.min(24, (colW - 28) / Math.max(1, availPlayers.length - 1));
+          const r = 15;
+          const spacing = Math.min(26, (colW - 30) / Math.max(1, availPlayers.length - 1));
           const totalRowW = (availPlayers.length - 1) * spacing;
           const startAvX = cx + colW / 2 - totalRowW / 2;
 
           availPlayers.forEach((p, idx) => {
-            drawPlayerToken(ctx, p, startAvX + idx * spacing, gridY + 66, r, '#38bdf8', 1);
+            drawPlayerToken(ctx, p, startAvX + idx * spacing, gridY + 72, r, '#38bdf8', 1);
           });
         }
         ctx.textAlign = 'left';
