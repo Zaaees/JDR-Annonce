@@ -247,13 +247,24 @@ function handleCropHttp(req, res, client) {
           return;
         }
 
-        const data = imageBase64.replace(/^data:image\/png;base64,/, '');
-        const filename = `${session.campaignId}_${Date.now()}.png`;
-        const filepath = path.join(UPLOADS_DIR, filename);
-        fs.writeFileSync(filepath, Buffer.from(data, 'base64'));
-
-        // Mettre à jour la campagne avec le fichier local recadré
-        updateCampaignConfig(session.guildId, session.campaignId, { bannerUrl: filepath });
+        const buffer = Buffer.from(imageBase64.replace(/^data:image\/png;base64,/, ''), 'base64');
+        let bannerUrl = imageBase64;
+        if (client) {
+          try {
+            const { getGuildState } = require('../storage/store');
+            const { guild: gData } = getGuildState(session.guildId);
+            if (gData.channelId) {
+              const channel = await client.channels.fetch(gData.channelId);
+              if (channel) {
+                const { AttachmentBuilder } = require('discord.js');
+                const att = new AttachmentBuilder(buffer, { name: `banner_.png` });
+                const storageMsg = await channel.send({ content: '[Bannière enregistrée]', files: [att] });
+                bannerUrl = storageMsg.attachments.first().url;
+              }
+            }
+          } catch (e) { console.error('Erreur hébergement Discord:', e); }
+        }
+        updateCampaignConfig(session.guildId, session.campaignId, { bannerUrl });
         cropSessions.delete(token);
 
         if (client) {
