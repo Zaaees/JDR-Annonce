@@ -132,9 +132,9 @@ function buildPlayerVotePanel(campaign, userId) {
   const weekDays = getWeekDaysFromMonday(campaign.weekMondayISO);
   const selectedSet = getOrInitDraft(campaign, userId);
 
-  // Ligne 1 : Lundi à Vendredi (indices 0 à 4)
-  const rowWeekdays = new ActionRowBuilder().addComponents(
-    weekDays.slice(0, 5).map((d, idx) => {
+  // Ligne 1 : Lundi, Mardi, Mercredi, Jeudi (indices 0 à 3)
+  const rowDays1 = new ActionRowBuilder().addComponents(
+    weekDays.slice(0, 4).map((d, idx) => {
       const isSelected = selectedSet.has(idx);
       return new ButtonBuilder()
         .setCustomId(`toggle_day:${campaign.id}:${idx}`)
@@ -143,16 +143,20 @@ function buildPlayerVotePanel(campaign, userId) {
     })
   );
 
-  // Ligne 2 : Samedi, Dimanche (indices 5 et 6) + Tout cocher + Semaine prochaine
-  const rowWeekend = new ActionRowBuilder().addComponents(
-    ...weekDays.slice(5, 7).map((d, offset) => {
-      const idx = 5 + offset;
+  // Ligne 2 : Vendredi, Samedi, Dimanche (indices 4 à 6)
+  const rowDays2 = new ActionRowBuilder().addComponents(
+    weekDays.slice(4, 7).map((d, offset) => {
+      const idx = 4 + offset;
       const isSelected = selectedSet.has(idx);
       return new ButtonBuilder()
         .setCustomId(`toggle_day:${campaign.id}:${idx}`)
         .setLabel(isSelected ? `✓ ${d.shortLabel}` : d.shortLabel)
         .setStyle(isSelected ? ButtonStyle.Success : ButtonStyle.Secondary);
-    }),
+    })
+  );
+
+  // Ligne 3 : Options globales "Toute la semaine" et "Semaine prochaine"
+  const rowActions = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setCustomId(`toggle_all:${campaign.id}`)
       .setLabel(selectedSet.size === 7 ? 'Tout décocher' : 'Toute la semaine')
@@ -163,7 +167,7 @@ function buildPlayerVotePanel(campaign, userId) {
       .setStyle(ButtonStyle.Danger)
   );
 
-  // Ligne 3 : Bouton Valider mes disponibilités
+  // Ligne 4 : Bouton Valider mes disponibilités
   const count = selectedSet.size;
   const rowConfirm = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
@@ -175,7 +179,7 @@ function buildPlayerVotePanel(campaign, userId) {
 
   return {
     content: `**${campaign.title}**`,
-    components: [rowWeekdays, rowWeekend, rowConfirm],
+    components: [rowDays1, rowDays2, rowActions, rowConfirm],
     allowedMentions: { parse: [] }
   };
 }
