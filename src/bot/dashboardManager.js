@@ -157,7 +157,7 @@ async function refreshDashboardMessage(client, guildId) {
     setDashboardMessageId(guildId, targetMsg.id);
   }
 
-  await cleanupObsoleteChannelMessages(client, guildId, channel);
+  
   return targetMsg;
 }
 
