@@ -282,19 +282,32 @@ async function renderDashboardBuffer(enrichedCampaigns) {
 
     // 1. Bannière de fond (Image personnalisée du MJ OU scène peinte procédurale)
     if (c.bannerImg) {
-      // Cover crop centré
       const imgRatio = c.bannerImg.width / c.bannerImg.height;
       const boxRatio = w / h;
       let drawW = w;
       let drawH = h;
       let offsetX = x;
       let offsetY = y;
+      const fit = c.bannerFit || 'center';
+
       if (imgRatio > boxRatio) {
         drawW = h * imgRatio;
-        offsetX = x - (drawW - w) / 2;
+        if (fit === 'left') {
+          offsetX = x;
+        } else if (fit === 'right') {
+          offsetX = x - (drawW - w);
+        } else {
+          offsetX = x - (drawW - w) / 2;
+        }
       } else {
         drawH = w / imgRatio;
-        offsetY = y - (drawH - h) / 2;
+        if (fit === 'top') {
+          offsetY = y;
+        } else if (fit === 'bottom') {
+          offsetY = y - (drawH - h);
+        } else {
+          offsetY = y - (drawH - h) / 2;
+        }
       }
       ctx.drawImage(c.bannerImg, offsetX, offsetY, drawW, drawH);
     } else {
