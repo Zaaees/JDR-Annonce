@@ -10,10 +10,11 @@ if (!fs.existsSync(UPLOADS_DIR)) {
 }
 
 // Tokens temporaires pour sécuriser l'accès au recadrage
-// Map<token, { guildId, campaignId, imageUrl, expiresAt }>
+// Map<token, { guildId, campaignId, imageUrl,
+    userId, expiresAt }>
 const cropSessions = new Map();
 
-function createCropSession(guildId, campaignId, imageUrl) {
+function createCropSession(guildId, campaignId, imageUrl, userId = null) {
   const token = crypto.randomBytes(16).toString('hex');
   cropSessions.set(token, {
     guildId,
@@ -251,18 +252,29 @@ function handleCropHttp(req, res, client) {
         let bannerUrl = imageBase64;
         if (client) {
           try {
-            const { getGuildState } = require('../storage/store');
-            const { guild: gData } = getGuildState(session.guildId);
-            if (gData.channelId) {
-              const channel = await client.channels.fetch(gData.channelId);
-              if (channel) {
-                const { AttachmentBuilder } = require('discord.js');
-                const att = new AttachmentBuilder(buffer, { name: `banner_.png` });
-                const storageMsg = await channel.send({ content: '[Bannière enregistrée]', files: [att] });
-                bannerUrl = storageMsg.attachments.first().url;
+            const { AttachmentBuilder } = require('discord.js');
+            const att = new AttachmentBuilder(buffer, { name: `banner_.png` });
+            let sentMsg = null;
+            if (session.userId) {
+              const user = await client.users.fetch(session.userId).catch(() => null);
+              if (user) {
+                sentMsg = await user.send({ content: '[Bannière de votre JDR archivée en DM pour conservation permanente]', files: [att] }).catch(() => null);
               }
             }
-          } catch (e) { console.error('Erreur hébergement Discord:', e); }
+            if (!sentMsg) {
+              const app = await client.application.fetch().catch(() => null);
+              const owner = app ? (app.owner?.user || app.owner) : null;
+              if (owner && owner.id) {
+                const ownerUser = await client.users.fetch(owner.id).catch(() => null);
+                if (ownerUser) {
+                  sentMsg = await ownerUser.send({ content: '[Bannière JDR archivée]', files: [att] }).catch(() => null);
+                }
+              }
+            }
+            if (sentMsg && sentMsg.attachments.first()) {
+              bannerUrl = sentMsg.attachments.first().url;
+            }
+          } catch (e) { console.error('Erreur hébergement DM Discord:', e); }
         }
         updateCampaignConfig(session.guildId, session.campaignId, { bannerUrl });
         cropSessions.delete(token);

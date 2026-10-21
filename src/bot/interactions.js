@@ -424,7 +424,7 @@ async function handleInteraction(client, interaction) {
           return;
         }
 
-        const token = createCropSession(guildId, target.id, image.url);
+        const token = createCropSession(guildId, target.id, image.url, interaction.user.id);
         const appUrl = (process.env.APP_URL || process.env.RENDER_EXTERNAL_URL || 'https://jdr-annonce.onrender.com').replace(/\/+$/, '');
         const cropUrl = appUrl + '/crop/' + token;
         const row = new ActionRowBuilder().addComponents(
