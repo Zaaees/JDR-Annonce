@@ -29,6 +29,24 @@ const {
   sendRolePing
 } = require('./dashboardManager');
 
+// Sélections en cours (avant clic sur "Valider") : Map<`${campaignId}:${userId}`, Set<number>>
+const draftSelections = new Map();
+
+function getDraftKey(campaignId, userId) {
+  return `${campaignId}:${userId}`;
+}
+
+function getOrInitDraft(campaign, userId) {
+  const key = getDraftKey(campaign.id, userId);
+  if (!draftSelections.has(key)) {
+    const existing = campaign.votes && Array.isArray(campaign.votes[userId])
+      ? campaign.votes[userId]
+      : [];
+    draftSelections.set(key, new Set(existing));
+  }
+  return draftSelections.get(key);
+}
+
 /**
  * Définition des commandes Slash (/jdr)
  */
@@ -88,17 +106,11 @@ function getSlashCommands() {
   return [jdrCmd.toJSON()];
 }
 
-/**
- * Seul le créateur de la table (mjId) est considéré comme le MJ de cette table.
- */
 function isUserMJ(interaction, campaign) {
   if (!campaign) return false;
   return interaction.user.id === campaign.mjId;
 }
 
-/**
- * Vérifie si l'utilisateur possède le @Rôle des joueurs de la table.
- */
 function isUserInRole(interaction, campaign) {
   if (!campaign || !campaign.roleId) return false;
   const memberRoles = interaction.member && interaction.member.roles;
@@ -113,43 +125,63 @@ function isUserInRole(interaction, campaign) {
 }
 
 /**
- * Panneau strictement réservé aux JOUEURS du @Rôle :
- * Uniquement la sélection de leurs jours disponibles + "Semaine prochaine".
+ * Panneau de vote JOUEUR avec boutons de jours cliquables (Vert = sélectionné, Gris = non sélectionné)
+ * sans fermeture automatique, + bouton "Semaine prochaine" et bouton "Valider".
  */
 function buildPlayerVotePanel(campaign, userId) {
   const weekDays = getWeekDaysFromMonday(campaign.weekMondayISO);
-  const existingVote = campaign.votes && Array.isArray(campaign.votes[userId])
-    ? campaign.votes[userId]
-    : [];
+  const selectedSet = getOrInitDraft(campaign, userId);
 
-  const options = weekDays.map((d, idx) => ({
-    label: d.fullLabel,
-    value: String(idx),
-    default: existingVote.includes(idx)
-  }));
+  // Ligne 1 : Lundi à Vendredi (indices 0 à 4)
+  const rowWeekdays = new ActionRowBuilder().addComponents(
+    weekDays.slice(0, 5).map((d, idx) => {
+      const isSelected = selectedSet.has(idx);
+      return new ButtonBuilder()
+        .setCustomId(`toggle_day:${campaign.id}:${idx}`)
+        .setLabel(isSelected ? `✓ ${d.shortLabel}` : d.shortLabel)
+        .setStyle(isSelected ? ButtonStyle.Success : ButtonStyle.Secondary);
+    })
+  );
 
-  options.push({
-    label: 'Semaine prochaine',
-    value: 'NEXT_WEEK'
-  });
+  // Ligne 2 : Samedi, Dimanche (indices 5 et 6) + Tout cocher + Semaine prochaine
+  const rowWeekend = new ActionRowBuilder().addComponents(
+    ...weekDays.slice(5, 7).map((d, offset) => {
+      const idx = 5 + offset;
+      const isSelected = selectedSet.has(idx);
+      return new ButtonBuilder()
+        .setCustomId(`toggle_day:${campaign.id}:${idx}`)
+        .setLabel(isSelected ? `✓ ${d.shortLabel}` : d.shortLabel)
+        .setStyle(isSelected ? ButtonStyle.Success : ButtonStyle.Secondary);
+    }),
+    new ButtonBuilder()
+      .setCustomId(`toggle_all:${campaign.id}`)
+      .setLabel(selectedSet.size === 7 ? 'Tout décocher' : 'Toute la semaine')
+      .setStyle(ButtonStyle.Primary),
+    new ButtonBuilder()
+      .setCustomId(`vote_next_week:${campaign.id}`)
+      .setLabel('Semaine prochaine')
+      .setStyle(ButtonStyle.Danger)
+  );
 
-  const voteSelect = new StringSelectMenuBuilder()
-    .setCustomId(`vote_days:${campaign.id}`)
-    .setPlaceholder('Sélectionner mes disponibilités...')
-    .setMinValues(1)
-    .setMaxValues(options.length)
-    .addOptions(options);
+  // Ligne 3 : Bouton Valider mes disponibilités
+  const count = selectedSet.size;
+  const rowConfirm = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`confirm_vote:${campaign.id}`)
+      .setLabel(count > 0 ? `Valider mes disponibilités (${count})` : 'Valider mes disponibilités')
+      .setStyle(ButtonStyle.Success)
+      .setDisabled(count === 0)
+  );
 
   return {
     content: `**${campaign.title}**`,
-    components: [new ActionRowBuilder().addComponents(voteSelect)],
+    components: [rowWeekdays, rowWeekend, rowConfirm],
     allowedMentions: { parse: [] }
   };
 }
 
 /**
- * Panneau strictement réservé au MJ de la table :
- * Définir/modifier le jour, relancer le sondage, terminer la session, retirer la date ou supprimer la table.
+ * Panneau strictement réservé au MJ de la table.
  */
 function buildMJControlPanel(campaign) {
   const weekDays = getWeekDaysFromMonday(campaign.weekMondayISO);
@@ -202,6 +234,67 @@ function buildMJControlPanel(campaign) {
     components: rows,
     allowedMentions: { parse: [] }
   };
+}
+
+/**
+ * Traite le résultat d'un vote joueur (validation des jours ou clic sur "Semaine prochaine")
+ */
+async function processVoteSubmission(client, interaction, guildId, campaign, selectedValues) {
+  await interaction.deferUpdate();
+
+  const discordGuild = await client.guilds.fetch(guildId);
+  const rolePlayers = await getRolePlayers(discordGuild, campaign);
+  const roleMemberIds = rolePlayers.map(p => p.id);
+
+  const result = submitPlayerVote(
+    guildId,
+    campaign.id,
+    interaction.user.id,
+    selectedValues,
+    roleMemberIds
+  );
+
+  draftSelections.delete(getDraftKey(campaign.id, interaction.user.id));
+
+  await refreshDashboardMessage(client, guildId);
+
+  if (result.event === 'AUTO_CONFIRMED') {
+    const dateStr = formatFullDateFR(result.campaign.confirmedDateISO);
+    await sendRolePing(
+      client,
+      guildId,
+      result.campaign,
+      `Session validée pour **${result.campaign.title}** : **${dateStr} à ${result.campaign.time}**.`
+    );
+    await interaction.editReply({
+      content: `Session validée : **${dateStr} à ${result.campaign.time}**.`,
+      components: []
+    });
+  } else if (result.event === 'SHIFTED_NEXT_WEEK') {
+    const nextWeekDays = getWeekDaysFromMonday(result.campaign.weekMondayISO);
+    await sendRolePing(
+      client,
+      guildId,
+      result.campaign,
+      `Nouveau sondage de disponibilité pour **${result.campaign.title}** (semaine du ${nextWeekDays[0].fullLabel}).`
+    );
+    const updatedPanel = buildPlayerVotePanel(result.campaign, interaction.user.id);
+    await interaction.editReply({
+      ...updatedPanel,
+      content: `**${result.campaign.title}** — Semaine du ${nextWeekDays[0].fullLabel}`
+    });
+  } else if (result.event === 'UNAVAILABLE_2_WEEKS') {
+    const untilStr = formatDayMonthFR(result.campaign.unavailableUntilISO);
+    await interaction.editReply({
+      content: `Joueurs non disponibles jusqu'au ${untilStr}.`,
+      components: []
+    });
+  } else {
+    await interaction.editReply({
+      content: `Disponibilités enregistrées pour **${result.campaign.title}**.`,
+      components: []
+    });
+  }
 }
 
 /**
@@ -292,7 +385,7 @@ async function handleInteraction(client, interaction) {
     }
 
     // =========================================================================
-    // 2. SÉLECTION D'UNE TABLE PAR UN JOUEUR (VOTE UNIQUEMENT)
+    // 2. SÉLECTION D'UNE TABLE PAR UN JOUEUR
     // =========================================================================
     if (interaction.isStringSelectMenu() && interaction.customId === 'select_campaign') {
       const guildId = interaction.guildId;
@@ -333,6 +426,8 @@ async function handleInteraction(client, interaction) {
         return;
       }
 
+      // Réinitialise le brouillon avec les jours déjà votés par ce joueur
+      draftSelections.delete(getDraftKey(campaign.id, interaction.user.id));
       const playerPanel = buildPlayerVotePanel(campaign, interaction.user.id);
       await interaction.reply({
         ...playerPanel,
@@ -342,7 +437,105 @@ async function handleInteraction(client, interaction) {
     }
 
     // =========================================================================
-    // 3. OUVERTURE DE L'ESPACE MJ (BOUTON SÉPARÉ RÉSERVÉ AU MJ)
+    // 3. BOUTONS DE SÉLECTION MULTI-JOURS JOUEUR (TOGGLE SANS FERMER LE MENU)
+    // =========================================================================
+    if (interaction.isButton() && interaction.customId.startsWith('toggle_day:')) {
+      const [, campaignId, dayIdxStr] = interaction.customId.split(':');
+      const dayIdx = parseInt(dayIdxStr, 10);
+      const { guild: guildData } = getGuildState(interaction.guildId);
+      const campaign = guildData.campaigns.find(c => c.id === campaignId);
+
+      if (!campaign || campaign.status !== 'poll') {
+        await interaction.update({ content: 'Ce sondage n’est plus actif.', components: [] });
+        return;
+      }
+
+      const selectedSet = getOrInitDraft(campaign, interaction.user.id);
+      if (selectedSet.has(dayIdx)) {
+        selectedSet.delete(dayIdx);
+      } else {
+        selectedSet.add(dayIdx);
+      }
+
+      const updatedPanel = buildPlayerVotePanel(campaign, interaction.user.id);
+      await interaction.update(updatedPanel);
+      return;
+    }
+
+    if (interaction.isButton() && interaction.customId.startsWith('toggle_all:')) {
+      const [, campaignId] = interaction.customId.split(':');
+      const { guild: guildData } = getGuildState(interaction.guildId);
+      const campaign = guildData.campaigns.find(c => c.id === campaignId);
+
+      if (!campaign || campaign.status !== 'poll') {
+        await interaction.update({ content: 'Ce sondage n’est plus actif.', components: [] });
+        return;
+      }
+
+      const selectedSet = getOrInitDraft(campaign, interaction.user.id);
+      if (selectedSet.size === 7) {
+        selectedSet.clear();
+      } else {
+        [0, 1, 2, 3, 4, 5, 6].forEach(i => selectedSet.add(i));
+      }
+
+      const updatedPanel = buildPlayerVotePanel(campaign, interaction.user.id);
+      await interaction.update(updatedPanel);
+      return;
+    }
+
+    if (interaction.isButton() && interaction.customId.startsWith('confirm_vote:')) {
+      const [, campaignId] = interaction.customId.split(':');
+      const guildId = interaction.guildId;
+      const { guild: guildData } = getGuildState(guildId);
+      const campaign = guildData.campaigns.find(c => c.id === campaignId);
+
+      if (!campaign || campaign.status !== 'poll') {
+        await interaction.update({ content: 'Ce sondage n’est plus actif.', components: [] });
+        return;
+      }
+
+      if (!isUserInRole(interaction, campaign)) {
+        await interaction.update({
+          content: `Seuls les membres du rôle <@&${campaign.roleId}> ont le droit de voter.`,
+          components: [],
+          allowedMentions: { parse: [] }
+        });
+        return;
+      }
+
+      const selectedSet = getOrInitDraft(campaign, interaction.user.id);
+      const selectedValues = Array.from(selectedSet).sort((a, b) => a - b).map(String);
+      await processVoteSubmission(client, interaction, guildId, campaign, selectedValues);
+      return;
+    }
+
+    if (interaction.isButton() && interaction.customId.startsWith('vote_next_week:')) {
+      const [, campaignId] = interaction.customId.split(':');
+      const guildId = interaction.guildId;
+      const { guild: guildData } = getGuildState(guildId);
+      const campaign = guildData.campaigns.find(c => c.id === campaignId);
+
+      if (!campaign || campaign.status !== 'poll') {
+        await interaction.update({ content: 'Ce sondage n’est plus actif.', components: [] });
+        return;
+      }
+
+      if (!isUserInRole(interaction, campaign)) {
+        await interaction.update({
+          content: `Seuls les membres du rôle <@&${campaign.roleId}> ont le droit de voter.`,
+          components: [],
+          allowedMentions: { parse: [] }
+        });
+        return;
+      }
+
+      await processVoteSubmission(client, interaction, guildId, campaign, ['NEXT_WEEK']);
+      return;
+    }
+
+    // =========================================================================
+    // 4. OUVERTURE DE L'ESPACE MJ (BOUTON SÉPARÉ RÉSERVÉ AU MJ)
     // =========================================================================
     if (interaction.isButton() && interaction.customId === 'open_mj_menu') {
       const guildId = interaction.guildId;
@@ -371,7 +564,6 @@ async function handleInteraction(client, interaction) {
         return;
       }
 
-      // Si le MJ gère plusieurs tables, lui propose de choisir laquelle gérer
       const selectMjTable = new StringSelectMenuBuilder()
         .setCustomId('select_mj_campaign')
         .setPlaceholder('Choisir la table à gérer...')
@@ -402,85 +594,6 @@ async function handleInteraction(client, interaction) {
 
       const mjPanel = buildMJControlPanel(campaign);
       await interaction.update(mjPanel);
-      return;
-    }
-
-    // =========================================================================
-    // 4. VOTE D'UN JOUEUR DU @RÔLE (JOURS OU "SEMAINE PROCHAINE")
-    // =========================================================================
-    if (interaction.isStringSelectMenu() && interaction.customId.startsWith('vote_days:')) {
-      const guildId = interaction.guildId;
-      const campaignId = interaction.customId.split(':')[1];
-      const { guild: guildData } = getGuildState(guildId);
-      const campaign = guildData.campaigns.find(c => c.id === campaignId);
-
-      if (!campaign) {
-        await interaction.update({ content: 'Cette table n’existe plus.', components: [] });
-        return;
-      }
-
-      if (!isUserInRole(interaction, campaign)) {
-        await interaction.update({
-          content: `Seuls les membres du rôle <@&${campaign.roleId}> ont le droit de voter.`,
-          components: [],
-          allowedMentions: { parse: [] }
-        });
-        return;
-      }
-
-      await interaction.deferUpdate();
-
-      const discordGuild = await client.guilds.fetch(guildId);
-      const rolePlayers = await getRolePlayers(discordGuild, campaign);
-      const roleMemberIds = rolePlayers.map(p => p.id);
-
-      const result = submitPlayerVote(
-        guildId,
-        campaignId,
-        interaction.user.id,
-        interaction.values,
-        roleMemberIds
-      );
-
-      await refreshDashboardMessage(client, guildId);
-
-      if (result.event === 'AUTO_CONFIRMED') {
-        const dateStr = formatFullDateFR(result.campaign.confirmedDateISO);
-        await sendRolePing(
-          client,
-          guildId,
-          result.campaign,
-          `Session validée pour **${result.campaign.title}** : **${dateStr} à ${result.campaign.time}**.`
-        );
-        await interaction.editReply({
-          content: `Session validée : **${dateStr} à ${result.campaign.time}**.`,
-          components: []
-        });
-      } else if (result.event === 'SHIFTED_NEXT_WEEK') {
-        const nextWeekDays = getWeekDaysFromMonday(result.campaign.weekMondayISO);
-        await sendRolePing(
-          client,
-          guildId,
-          result.campaign,
-          `Nouveau sondage de disponibilité pour **${result.campaign.title}** (semaine du ${nextWeekDays[0].fullLabel}).`
-        );
-        const updatedPanel = buildPlayerVotePanel(result.campaign, interaction.user.id);
-        await interaction.editReply({
-          ...updatedPanel,
-          content: `Passage à la semaine du **${nextWeekDays[0].fullLabel}**.`
-        });
-      } else if (result.event === 'UNAVAILABLE_2_WEEKS') {
-        const untilStr = formatDayMonthFR(result.campaign.unavailableUntilISO);
-        await interaction.editReply({
-          content: `Joueurs non disponibles jusqu'au ${untilStr}.`,
-          components: []
-        });
-      } else {
-        await interaction.editReply({
-          content: `Disponibilités enregistrées pour **${result.campaign.title}**.`,
-          components: []
-        });
-      }
       return;
     }
 
