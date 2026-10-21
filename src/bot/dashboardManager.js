@@ -47,9 +47,7 @@ async function getRolePlayers(discordGuild, campaign) {
 }
 
 /**
- * Construit les composants sous l'image du Méga-Dashboard :
- * - Ligne 1 : Menu déroulant pour les JOUEURS (voter sur une table)
- * - Ligne 2 : Bouton séparé réservé uniquement au MJ (gérer sa table)
+ * Construit les composants sous l'image du Méga-Dashboard.
  */
 function buildDashboardComponents(campaigns) {
   if (!campaigns || campaigns.length === 0) {
@@ -81,8 +79,36 @@ function buildDashboardComponents(campaigns) {
 }
 
 /**
- * Régénère l'image du Méga-Dashboard (avec sauvegarde invisible de l'état JSON intégrée au PNG)
- * et met à jour le message permanent dans le salon.
+ * Nettoie les messages obsolètes dans le salon d'annonces pour qu'il ne reste
+ * que l'affiche principale (dashboardMessageId) et les pings actuels des tables actives.
+ */
+async function cleanupObsoleteChannelMessages(client, guildId, channel) {
+  try {
+    const { guild: guildData } = getGuildState(guildId);
+    if (!guildData.dashboardMessageId) return;
+
+    const validMessageIds = new Set([guildData.dashboardMessageId]);
+    for (const c of guildData.campaigns) {
+      if (c.lastPingMessageId) {
+        validMessageIds.add(c.lastPingMessageId);
+      }
+    }
+
+    const recentMessages = await channel.messages.fetch({ limit: 30 }).catch(() => null);
+    if (!recentMessages) return;
+
+    for (const [msgId, msg] of recentMessages) {
+      if (!validMessageIds.has(msgId) && msg.author && msg.author.id === client.user.id) {
+        await msg.delete().catch(() => null);
+      }
+    }
+  } catch {
+    // Ignore si permission manquante
+  }
+}
+
+/**
+ * Régénère l'image du Méga-Dashboard et met à jour le message permanent dans le salon.
  */
 async function refreshDashboardMessage(client, guildId) {
   const { guild: guildData } = getGuildState(guildId);
@@ -118,17 +144,39 @@ async function refreshDashboardMessage(client, guildId) {
     components
   };
 
+  let targetMsg = null;
   if (guildData.dashboardMessageId) {
     const existingMsg = await channel.messages.fetch(guildData.dashboardMessageId).catch(() => null);
     if (existingMsg) {
-      await existingMsg.edit(payload);
-      return existingMsg;
+      targetMsg = await existingMsg.edit(payload);
     }
   }
 
-  const newMsg = await channel.send(payload);
-  setDashboardMessageId(guildId, newMsg.id);
-  return newMsg;
+  if (!targetMsg) {
+    targetMsg = await channel.send(payload);
+    setDashboardMessageId(guildId, targetMsg.id);
+  }
+
+  await cleanupObsoleteChannelMessages(client, guildId, channel);
+  return targetMsg;
+}
+
+/**
+ * Supprime le message de ping d'une campagne spécifique (ex: session passée, date retirée ou table supprimée).
+ */
+async function deleteCampaignPing(client, guildId, campaign) {
+  if (!campaign || !campaign.lastPingMessageId) return;
+  const { guild: guildData } = getGuildState(guildId);
+  if (!guildData.channelId) return;
+
+  const channel = await client.channels.fetch(guildData.channelId).catch(() => null);
+  if (channel && channel.isTextBased()) {
+    const oldPing = await channel.messages.fetch(campaign.lastPingMessageId).catch(() => null);
+    if (oldPing) {
+      await oldPing.delete().catch(() => null);
+    }
+  }
+  setCampaignPingMessageId(guildId, campaign.id, null);
 }
 
 /**
@@ -203,7 +251,7 @@ async function autoRecoverGuildsFromDiscord(client) {
 }
 
 /**
- * Envoie un ping au @Rôle du JDR dans le salon (et nettoie l'ancien ping de ce même JDR).
+ * Envoie un ping au @Rôle du JDR dans le salon (et supprime systématiquement l'ancien ping de ce même JDR).
  */
 async function sendRolePing(client, guildId, campaign, messageText) {
   const { guild: guildData } = getGuildState(guildId);
@@ -226,12 +274,15 @@ async function sendRolePing(client, guildId, campaign, messageText) {
 
   if (sent) {
     setCampaignPingMessageId(guildId, campaign.id, sent.id);
+    // Met à jour les métadonnées PNG pour mémoriser le nouvel ID de ping
+    await refreshDashboardMessage(client, guildId).catch(() => null);
   }
 }
 
 module.exports = {
   getRolePlayers,
   refreshDashboardMessage,
+  deleteCampaignPing,
   tryRestoreStateFromMessage,
   autoRecoverGuildsFromDiscord,
   sendRolePing

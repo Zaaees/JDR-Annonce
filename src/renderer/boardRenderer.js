@@ -47,7 +47,7 @@ function drawProceduralArtwork(ctx, x, y, w, h, theme = 'fantasy', seed = 1) {
     ctx.fillStyle = sky;
     ctx.fillRect(0, 0, w, h);
 
-    const sun = ctx.createRadialGradient(w * 0.78, h * 0.35, 5, w * 0.78, h * 0.35, 220);
+    const sun = ctx.createRadialGradient(w * 0.78, h * 0.35, 5, w * 0.78, h * 0.35, 240);
     sun.addColorStop(0, 'rgba(255, 190, 90, 0.75)');
     sun.addColorStop(0.35, 'rgba(210, 95, 30, 0.35)');
     sun.addColorStop(1, 'rgba(20, 10, 5, 0)');
@@ -72,7 +72,6 @@ function drawProceduralArtwork(ctx, x, y, w, h, theme = 'fantasy', seed = 1) {
     drawRidge(h * 0.62, 42, 'rgba(38, 19, 12, 0.85)', 1.2 + seed);
     drawRidge(h * 0.74, 35, '#1b0d08', 2.7 + seed);
 
-    // Silhouette de citadelle
     ctx.fillStyle = '#120805';
     ctx.fillRect(w * 0.68, h * 0.36, 38, 70);
     ctx.fillRect(w * 0.72, h * 0.28, 24, 88);
@@ -101,12 +100,12 @@ function drawProceduralArtwork(ctx, x, y, w, h, theme = 'fantasy', seed = 1) {
     ctx.fillRect(0, 0, w, h);
 
     const buildings = [
-      { x: 460, y: 35, bw: 65, bh: 205, c: '#070d17' },
-      { x: 535, y: 18, bw: 82, bh: 222, c: '#050911' },
-      { x: 625, y: 52, bw: 58, bh: 188, c: '#08101c' },
-      { x: 690, y: 12, bw: 95, bh: 228, c: '#04080f' },
-      { x: 795, y: 40, bw: 70, bh: 200, c: '#070d17' },
-      { x: 875, y: 24, bw: 90, bh: 216, c: '#050911' }
+      { x: 460, y: 35, bw: 65, bh: 285, c: '#070d17' },
+      { x: 535, y: 18, bw: 82, bh: 302, c: '#050911' },
+      { x: 625, y: 52, bw: 58, bh: 268, c: '#08101c' },
+      { x: 690, y: 12, bw: 95, bh: 308, c: '#04080f' },
+      { x: 795, y: 40, bw: 70, bh: 280, c: '#070d17' },
+      { x: 875, y: 24, bw: 90, bh: 296, c: '#050911' }
     ];
     buildings.forEach((b, idx) => {
       ctx.fillStyle = b.c;
@@ -140,7 +139,7 @@ function drawProceduralArtwork(ctx, x, y, w, h, theme = 'fantasy', seed = 1) {
     ctx.fill();
 
     ctx.fillStyle = '#070a0d';
-    ctx.fillRect(620, 95, 95, 120);
+    ctx.fillRect(620, 95, 95, 160);
     ctx.beginPath();
     ctx.moveTo(612, 95);
     ctx.lineTo(667, 45);
@@ -164,7 +163,7 @@ function drawProceduralArtwork(ctx, x, y, w, h, theme = 'fantasy', seed = 1) {
     ctx.fillRect(0, 0, w, h);
 
     ctx.fillStyle = '#090608';
-    ctx.fillRect(660, 75, 85, 165);
+    ctx.fillRect(660, 75, 85, 205);
     ctx.beginPath();
     ctx.moveTo(655, 75);
     ctx.lineTo(680, 18);
@@ -191,7 +190,6 @@ function drawPlayerToken(ctx, player, cx, cy, radius, borderColor, alpha = 1) {
   if (player.avatarImg) {
     ctx.drawImage(player.avatarImg, cx - radius, cy - radius, radius * 2, radius * 2);
   } else {
-    // Fallback silhouette propre si l'avatar Discord n'a pas pu être chargé
     ctx.fillStyle = '#1e293b';
     ctx.fillRect(cx - radius, cy - radius, radius * 2, radius * 2);
     ctx.fillStyle = '#94a3b8';
@@ -207,7 +205,7 @@ function drawPlayerToken(ctx, player, cx, cy, radius, borderColor, alpha = 1) {
   if (borderColor) {
     ctx.save();
     ctx.strokeStyle = borderColor;
-    ctx.lineWidth = 2.5;
+    ctx.lineWidth = 3;
     ctx.beginPath();
     ctx.arc(cx, cy, radius, 0, Math.PI * 2);
     ctx.stroke();
@@ -217,13 +215,11 @@ function drawPlayerToken(ctx, player, cx, cy, radius, borderColor, alpha = 1) {
 
 /**
  * Génère le Buffer PNG du Méga-Dashboard regroupant toutes les campagnes JDR.
- * @param {Array} enrichedCampaigns - Campagnes enrichies avec `players: [{ id, name, avatarUrl, voted, days }]`
- * @returns {Promise<Buffer>}
  */
 async function renderDashboardBuffer(enrichedCampaigns) {
   const width = 1000;
-  const cardH = 290;
-  const gap = 20;
+  const cardH = 330;
+  const gap = 22;
   const pad = 24;
 
   if (!enrichedCampaigns || enrichedCampaigns.length === 0) {
@@ -237,13 +233,12 @@ async function renderDashboardBuffer(enrichedCampaigns) {
     ctx.strokeStyle = 'rgba(255,255,255,0.1)';
     ctx.stroke();
     ctx.fillStyle = '#94a3b8';
-    ctx.font = '600 20px sans-serif';
+    ctx.font = '700 24px sans-serif';
     ctx.textAlign = 'center';
-    ctx.fillText('Aucune table JDR active.', width / 2, 96);
+    ctx.fillText('Aucune table JDR active.', width / 2, 98);
     return emptyCanvas.toBuffer('image/png');
   }
 
-  // Pré-chargement parallèle des bannières personnalisées et des avatars Discord
   await Promise.all(
     enrichedCampaigns.map(async c => {
       if (c.bannerUrl) {
@@ -277,12 +272,11 @@ async function renderDashboardBuffer(enrichedCampaigns) {
     const players = c.players || [];
 
     ctx.save();
-    roundRect(ctx, x, y, w, h, 12);
+    roundRect(ctx, x, y, w, h, 14);
     ctx.clip();
 
-    // 1. Bannière de fond (Image personnalisée du MJ OU scène peinte procédurale)
+    // 1. Bannière de fond
     if (c.bannerImg) {
-      // Cover crop centré
       const imgRatio = c.bannerImg.width / c.bannerImg.height;
       const boxRatio = w / h;
       let drawW = w;
@@ -301,138 +295,165 @@ async function renderDashboardBuffer(enrichedCampaigns) {
       drawProceduralArtwork(ctx, x, y, w, h, c.theme || 'fantasy', index + 1);
     }
 
-    // 2. Fondus légers pour faire ressortir l'image tout en assurant la lisibilité du texte
-    // Dégradé sombre doux uniquement en haut (derrière titre et avatars) et en bas (derrière les cases)
-    const topGrad = ctx.createLinearGradient(x, y, x, y + 90);
-    topGrad.addColorStop(0, 'rgba(10, 11, 15, 0.75)');
-    topGrad.addColorStop(1, 'rgba(10, 11, 15, 0.05)');
+    // 2. Fondus ciblés en haut et en bas pour conserver la visibilité de la bannière
+    const topGrad = ctx.createLinearGradient(x, y, x, y + 115);
+    topGrad.addColorStop(0, 'rgba(8, 9, 13, 0.85)');
+    topGrad.addColorStop(0.7, 'rgba(8, 9, 13, 0.45)');
+    topGrad.addColorStop(1, 'rgba(8, 9, 13, 0)');
     ctx.fillStyle = topGrad;
-    ctx.fillRect(x, y, w, 90);
+    ctx.fillRect(x, y, w, 115);
 
-    const bottomGrad = ctx.createLinearGradient(x, y + h - 160, x, y + h);
-    bottomGrad.addColorStop(0, 'rgba(10, 11, 15, 0.1)');
-    bottomGrad.addColorStop(1, 'rgba(10, 11, 15, 0.85)');
+    const bottomGrad = ctx.createLinearGradient(x, y + h - 180, x, y + h);
+    bottomGrad.addColorStop(0, 'rgba(8, 9, 13, 0)');
+    bottomGrad.addColorStop(0.35, 'rgba(8, 9, 13, 0.65)');
+    bottomGrad.addColorStop(1, 'rgba(8, 9, 13, 0.92)');
     ctx.fillStyle = bottomGrad;
-    ctx.fillRect(x, y + h - 160, w, 160);
+    ctx.fillRect(x, y + h - 180, w, 180);
 
-    // 3. Titre du JDR + @Rôle Discord + MJ
+    // 3. Titre du JDR grand format + Ombre portée franche
+    ctx.save();
+    ctx.shadowColor = 'rgba(0, 0, 0, 0.95)';
+    ctx.shadowBlur = 10;
+    ctx.shadowOffsetX = 0;
+    ctx.shadowOffsetY = 2;
     ctx.fillStyle = '#ffffff';
-    ctx.font = '800 24px Georgia, serif';
-    ctx.fillText(c.title, x + 24, y + 40);
+    ctx.font = '900 36px Georgia, serif';
+    ctx.fillText(c.title, x + 26, y + 48);
+    ctx.restore();
 
-    ctx.font = '600 13px sans-serif';
-    ctx.fillStyle = c.roleColor || '#f59e0b';
+    // Badge lisible pour @Rôle et MJ
     const roleLabel = c.roleName.startsWith('@') ? c.roleName : `@${c.roleName}`;
-    ctx.fillText(`${roleLabel}  ·  MJ ${c.mjName}`, x + 24, y + 62);
+    const mjLabel = `MJ : ${c.mjName}`;
+    ctx.font = '700 19px sans-serif';
+    const roleWidth = ctx.measureText(roleLabel).width;
+    const mjWidth = ctx.measureText(mjLabel).width;
+    const badgeW = roleWidth + mjWidth + 46;
 
-    // Avatars des membres du @Rôle en haut à droite
-    let curX = x + w - 24;
+    roundRect(ctx, x + 26, y + 62, badgeW, 34, 8);
+    ctx.fillStyle = 'rgba(10, 12, 18, 0.78)';
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.18)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    ctx.fillStyle = c.roleColor || '#fbbf24';
+    ctx.fillText(roleLabel, x + 38, y + 85);
+
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.4)';
+    ctx.fillText('·', x + 46 + roleWidth, y + 85);
+
+    ctx.fillStyle = '#f1f5f9';
+    ctx.fillText(mjLabel, x + 58 + roleWidth, y + 85);
+
+    // Avatars des membres du @Rôle en haut à droite (plus grands : rayon 23px)
+    let curX = x + w - 26;
     for (let i = players.length - 1; i >= 0; i--) {
       const p = players[i];
       const isReady = c.status === 'confirmed' || p.voted;
-      curX -= 18;
+      curX -= 23;
       drawPlayerToken(
         ctx,
         p,
         curX,
-        y + 38,
-        18,
-        isReady ? '#10b981' : 'rgba(255,255,255,0.2)',
-        isReady ? 1 : 0.45
+        y + 48,
+        23,
+        isReady ? '#10b981' : 'rgba(255,255,255,0.28)',
+        isReady ? 1 : 0.5
       );
-      curX -= 26;
+      curX -= 32;
     }
 
     // 4. Zone inférieure selon le statut ('confirmed' | 'unavailable' | 'poll')
     if (c.status === 'confirmed' && c.confirmedDateISO) {
       const fullDateStr = formatFullDateFR(c.confirmedDateISO).toUpperCase();
 
-      roundRect(ctx, x + 24, y + 155, w - 48, 110, 10);
-      ctx.fillStyle = 'rgba(16, 185, 129, 0.18)';
+      roundRect(ctx, x + 24, y + 182, w - 48, 124, 12);
+      ctx.fillStyle = 'rgba(10, 22, 18, 0.85)';
       ctx.fill();
-      ctx.strokeStyle = 'rgba(52, 211, 153, 0.55)';
-      ctx.lineWidth = 1.5;
+      ctx.strokeStyle = '#34d399';
+      ctx.lineWidth = 2;
       ctx.stroke();
 
       ctx.fillStyle = '#34d399';
-      ctx.font = '700 13px sans-serif';
-      ctx.fillText('PROCHAINE SESSION', x + 44, y + 190);
+      ctx.font = '800 16px sans-serif';
+      ctx.fillText('PROCHAINE SESSION', x + 44, y + 218);
 
       ctx.fillStyle = '#ffffff';
-      ctx.font = '800 30px sans-serif';
-      ctx.fillText(`${fullDateStr}  —  ${c.time}`, x + 44, y + 234);
+      ctx.font = '900 34px sans-serif';
+      ctx.fillText(`${fullDateStr}  —  ${c.time}`, x + 44, y + 268);
 
-      let tokenX = x + w - 56;
+      let tokenX = x + w - 60;
       players.slice().reverse().forEach(p => {
-        drawPlayerToken(ctx, p, tokenX, y + 210, 24, '#34d399', 1);
-        tokenX -= 40;
+        drawPlayerToken(ctx, p, tokenX, y + 244, 26, '#34d399', 1);
+        tokenX -= 44;
       });
     } else if (c.status === 'unavailable' && c.unavailableUntilISO) {
       const untilStr = formatDayMonthFR(c.unavailableUntilISO);
 
-      roundRect(ctx, x + 24, y + 155, w - 48, 110, 10);
-      ctx.fillStyle = 'rgba(244, 63, 94, 0.18)';
+      roundRect(ctx, x + 24, y + 182, w - 48, 124, 12);
+      ctx.fillStyle = 'rgba(28, 10, 16, 0.85)';
       ctx.fill();
-      ctx.strokeStyle = 'rgba(244, 63, 94, 0.5)';
-      ctx.lineWidth = 1.5;
+      ctx.strokeStyle = 'rgba(244, 63, 94, 0.65)';
+      ctx.lineWidth = 2;
       ctx.stroke();
 
       ctx.fillStyle = '#fda4af';
-      ctx.font = '700 24px sans-serif';
-      ctx.fillText(`Joueurs non disponibles jusqu'au ${untilStr}.`, x + 44, y + 218);
+      ctx.font = '800 28px sans-serif';
+      ctx.fillText(`Joueurs non disponibles jusqu'au ${untilStr}.`, x + 44, y + 254);
     } else {
-      // Sondage en cours : 7 colonnes (LUN .. DIM) avec les jetons des joueurs disponibles
+      // Sondage en cours : 7 colonnes (LUN .. DIM) très lisibles
       const gridX = x + 24;
-      const gridY = y + 150;
+      const gridY = y + 174;
       const gridW = w - 48;
       const colGap = 8;
       const colW = (gridW - colGap * 6) / 7;
-      const colH = 116;
+      const colH = 132;
 
       weekDays.forEach((d, dayIdx) => {
         const cx = gridX + dayIdx * (colW + colGap);
         const availPlayers = players.filter(p => p.voted && p.days.includes(dayIdx));
         const isFull = availPlayers.length === players.length && players.length > 0;
 
-        roundRect(ctx, cx, gridY, colW, colH, 8);
-        ctx.fillStyle = isFull ? 'rgba(16, 185, 129, 0.28)' : 'rgba(17, 19, 25, 0.82)';
+        roundRect(ctx, cx, gridY, colW, colH, 10);
+        ctx.fillStyle = isFull ? 'rgba(16, 185, 129, 0.32)' : 'rgba(12, 14, 20, 0.88)';
         ctx.fill();
-        ctx.strokeStyle = isFull ? '#34d399' : 'rgba(255, 255, 255, 0.12)';
-        ctx.lineWidth = 1;
+        ctx.strokeStyle = isFull ? '#34d399' : 'rgba(255, 255, 255, 0.18)';
+        ctx.lineWidth = 1.5;
         ctx.stroke();
 
-        ctx.fillStyle = isFull ? '#34d399' : '#e2e8f0';
-        ctx.font = '700 13px sans-serif';
+        // Nom du jour + Date en grand (19px)
+        ctx.fillStyle = isFull ? '#34d399' : '#ffffff';
+        ctx.font = '800 18px sans-serif';
         ctx.textAlign = 'center';
-        ctx.fillText(`${d.code} ${d.dayNum}`, cx + colW / 2, gridY + 24);
+        ctx.fillText(`${d.code} ${d.dayNum}`, cx + colW / 2, gridY + 28);
 
-        ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+        ctx.strokeStyle = 'rgba(255,255,255,0.12)';
         ctx.beginPath();
-        ctx.moveTo(cx + 10, gridY + 34);
-        ctx.lineTo(cx + colW - 10, gridY + 34);
+        ctx.moveTo(cx + 10, gridY + 40);
+        ctx.lineTo(cx + colW - 10, gridY + 40);
         ctx.stroke();
 
         if (availPlayers.length === 0) {
-          ctx.fillStyle = 'rgba(255,255,255,0.2)';
-          ctx.font = '500 12px sans-serif';
-          ctx.fillText('—', cx + colW / 2, gridY + 76);
+          ctx.fillStyle = 'rgba(255,255,255,0.28)';
+          ctx.font = '700 16px sans-serif';
+          ctx.fillText('—', cx + colW / 2, gridY + 90);
         } else {
-          const r = 15;
-          const spacing = Math.min(26, (colW - 30) / Math.max(1, availPlayers.length - 1));
+          const r = 19;
+          const spacing = Math.min(28, (colW - 38) / Math.max(1, availPlayers.length - 1));
           const totalRowW = (availPlayers.length - 1) * spacing;
           const startAvX = cx + colW / 2 - totalRowW / 2;
 
           availPlayers.forEach((p, idx) => {
-            drawPlayerToken(ctx, p, startAvX + idx * spacing, gridY + 72, r, '#38bdf8', 1);
+            drawPlayerToken(ctx, p, startAvX + idx * spacing, gridY + 84, r, '#38bdf8', 1);
           });
         }
         ctx.textAlign = 'left';
       });
     }
 
-    roundRect(ctx, x, y, w, h, 12);
-    ctx.strokeStyle = 'rgba(255,255,255,0.14)';
-    ctx.lineWidth = 1;
+    roundRect(ctx, x, y, w, h, 14);
+    ctx.strokeStyle = 'rgba(255,255,255,0.18)';
+    ctx.lineWidth = 1.5;
     ctx.stroke();
 
     ctx.restore();

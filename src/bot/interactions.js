@@ -26,6 +26,7 @@ const {
 const {
   getRolePlayers,
   refreshDashboardMessage,
+  deleteCampaignPing,
   tryRestoreStateFromMessage,
   sendRolePing
 } = require('./dashboardManager');
@@ -125,7 +126,13 @@ function getSlashCommands() {
 function isUserMJ(interaction, campaign) {
   if (!campaign) return false;
   if (interaction.user.id === campaign.mjId) return true;
-  if (interaction.memberPermissions && (interaction.memberPermissions.has(PermissionFlagsBits.Administrator) || interaction.memberPermissions.has(PermissionFlagsBits.ManageGuild))) return true;
+  if (
+    interaction.memberPermissions &&
+    (interaction.memberPermissions.has(PermissionFlagsBits.Administrator) ||
+      interaction.memberPermissions.has(PermissionFlagsBits.ManageGuild))
+  ) {
+    return true;
+  }
   return false;
 }
 
@@ -203,7 +210,7 @@ function buildPlayerVotePanel(campaign, userId) {
 }
 
 /**
- * Panneau strictement réservé au MJ de la table.
+ * Panneau strictement réservé au MJ de la table (ou Administrateur).
  */
 function buildMJControlPanel(campaign) {
   const weekDays = getWeekDaysFromMonday(campaign.weekMondayISO);
@@ -306,6 +313,7 @@ async function processVoteSubmission(client, interaction, guildId, campaign, sel
       content: `**${result.campaign.title}** — Semaine du ${nextWeekDays[0].fullLabel}`
     });
   } else if (result.event === 'UNAVAILABLE_2_WEEKS') {
+    await deleteCampaignPing(client, guildId, result.campaign);
     const untilStr = formatDayMonthFR(result.campaign.unavailableUntilISO);
     await interaction.editReply({
       content: `Joueurs non disponibles jusqu'au ${untilStr}.`,
@@ -358,7 +366,9 @@ async function handleInteraction(client, interaction) {
         const campaign = createCampaign(guildId, {
           title,
           mjId: mjUser ? mjUser.id : interaction.user.id,
-          mjName: mjUser ? (interaction.guild.members.cache.get(mjUser.id)?.displayName || mjUser.username) : (interaction.member ? interaction.member.displayName : interaction.user.username),
+          mjName: mjUser
+            ? (interaction.guild.members.cache.get(mjUser.id)?.displayName || mjUser.username)
+            : (interaction.member ? interaction.member.displayName : interaction.user.username),
           roleId: role.id,
           roleName: `@${role.name}`,
           roleColor: role.hexColor !== '#000000' ? role.hexColor : '#f59e0b',
@@ -367,15 +377,8 @@ async function handleInteraction(client, interaction) {
           bannerUrl: bannerAttachment ? bannerAttachment.url : null
         });
 
+        // Mise à jour de l'affiche uniquement, sans poster de message supplémentaire dans le salon
         await refreshDashboardMessage(client, guildId);
-
-        const weekDays = getWeekDaysFromMonday(campaign.weekMondayISO);
-        await sendRolePing(
-          client,
-          guildId,
-          campaign,
-          `Nouveau sondage de disponibilité pour **${campaign.title}** (semaine du ${weekDays[0].fullLabel}).`
-        );
 
         await interaction.editReply({
           content: `Table **${campaign.title}** créée avec le rôle <@&${role.id}>.`,
@@ -392,7 +395,7 @@ async function handleInteraction(client, interaction) {
         const { guild: guildData } = getGuildState(guildId);
         const target = guildData.campaigns.find(c => c.roleId === role.id);
         if (!target) {
-          await interaction.editReply({ content: `Aucune table associée au rôle <@&>.` });
+          await interaction.editReply({ content: `Aucune table associée au rôle <@&${role.id}>.` });
           return;
         }
         if (!isUserMJ(interaction, target)) {
@@ -404,7 +407,10 @@ async function handleInteraction(client, interaction) {
         const mjName = member ? member.displayName : newMjUser.username;
         updateCampaignConfig(guildId, target.id, { mjId: newMjUser.id, mjName });
         await refreshDashboardMessage(client, guildId);
-        await interaction.editReply({ content: `Le nouveau MJ de **** est maintenant <@>.` });
+        await interaction.editReply({
+          content: `Le nouveau MJ de **${target.title}** est maintenant <@${newMjUser.id}>.`,
+          allowedMentions: { parse: [] }
+        });
         return;
       }
 
@@ -483,7 +489,6 @@ async function handleInteraction(client, interaction) {
         return;
       }
 
-      // Réinitialise le brouillon avec les jours déjà votés par ce joueur
       draftSelections.delete(getDraftKey(campaign.id, interaction.user.id));
       const playerPanel = buildPlayerVotePanel(campaign, interaction.user.id);
       await interaction.reply({
@@ -592,7 +597,7 @@ async function handleInteraction(client, interaction) {
     }
 
     // =========================================================================
-    // 4. OUVERTURE DE L'ESPACE MJ (BOUTON SÉPARÉ RÉSERVÉ AU MJ)
+    // 4. OUVERTURE DE L'ESPACE MJ (BOUTON SÉPARÉ RÉSERVÉ AU MJ / ADMIN)
     // =========================================================================
     if (interaction.isButton() && interaction.customId === 'open_mj_menu') {
       const guildId = interaction.guildId;
@@ -603,8 +608,14 @@ async function handleInteraction(client, interaction) {
         if (restored) guildData = restored;
       }
 
-      const isAdmin = interaction.memberPermissions && (interaction.memberPermissions.has(PermissionFlagsBits.Administrator) || interaction.memberPermissions.has(PermissionFlagsBits.ManageGuild));
-      const mjCampaigns = (guildData.campaigns || []).filter(c => c.mjId === interaction.user.id || isAdmin);
+      const isAdmin =
+        interaction.memberPermissions &&
+        (interaction.memberPermissions.has(PermissionFlagsBits.Administrator) ||
+          interaction.memberPermissions.has(PermissionFlagsBits.ManageGuild));
+      const mjCampaigns = (guildData.campaigns || []).filter(
+        c => c.mjId === interaction.user.id || isAdmin
+      );
+
       if (mjCampaigns.length === 0) {
         await interaction.reply({
           content: 'Seul le MJ d’une table (ou un administrateur) peut accéder à cet espace.',
@@ -742,6 +753,7 @@ async function handleInteraction(client, interaction) {
       }
 
       if (action === 'mj_clear_date') {
+        await deleteCampaignPing(client, guildId, campaign);
         const updated = clearSessionDate(guildId, campaignId);
         await refreshDashboardMessage(client, guildId);
         await interaction.editReply({
@@ -752,6 +764,7 @@ async function handleInteraction(client, interaction) {
       }
 
       if (action === 'mj_delete') {
+        await deleteCampaignPing(client, guildId, campaign);
         const removed = deleteCampaign(guildId, campaignId);
         await refreshDashboardMessage(client, guildId);
         await interaction.editReply({
