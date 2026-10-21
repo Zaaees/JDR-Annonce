@@ -23,6 +23,7 @@ const {
 const {
   getWeekDaysFromMonday
 } = require('./utils/dates');
+const { handleCropHttp } = require('./server/cropServer');
 
 const token = process.env.DISCORD_TOKEN;
 if (!token) {
@@ -30,9 +31,20 @@ if (!token) {
   process.exit(1);
 }
 
-// Serveur HTTP léger requis par Render (offre gratuite "Web Service") pour maintenir le processus actif
+const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.GuildMessages
+  ]
+});
+
+// Serveur HTTP requis par Render (héberge aussi l'outil de recadrage interactif /crop/:token)
 const port = process.env.PORT || 10000;
 const server = http.createServer((req, res) => {
+  if (handleCropHttp(req, res, client)) {
+    return;
+  }
   res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
   res.end('Bot JDR en ligne');
 });
@@ -40,15 +52,7 @@ server.on('error', () => {
   // Ignore si le port local est déjà occupé en développement
 });
 server.listen(port, '0.0.0.0', () => {
-  console.log(`Serveur HTTP Health-Check actif sur le port ${port}`);
-});
-
-const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMembers,
-    GatewayIntentBits.GuildMessages
-  ]
+  console.log(`Serveur HTTP actif sur le port ${port}`);
 });
 
 async function registerCommands(appId) {

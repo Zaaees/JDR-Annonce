@@ -28,6 +28,7 @@ const {
   tryRestoreStateFromMessage,
   sendRolePing
 } = require('./dashboardManager');
+const { createCropSession } = require('../server/cropServer');
 
 // Sélections en cours (avant clic sur "Valider") : Map<`${campaignId}:${userId}`, Set<number>>
 const draftSelections = new Map();
@@ -381,9 +382,19 @@ async function handleInteraction(client, interaction) {
           return;
         }
 
-        updateCampaignConfig(guildId, target.id, { bannerUrl: image.url });
-        await refreshDashboardMessage(client, guildId);
-        await interaction.editReply({ content: `Bannière mise à jour pour **${target.title}**.` });
+        const token = createCropSession(guildId, target.id, image.url);
+        const appUrl = (process.env.APP_URL || process.env.RENDER_EXTERNAL_URL || 'https://jdr-annonce.onrender.com').replace(/\/+$/, '');
+        const cropUrl = appUrl + '/crop/' + token;
+        const row = new ActionRowBuilder().addComponents(
+          new ButtonBuilder()
+            .setLabel('Recadrer la bannière')
+            .setStyle(ButtonStyle.Link)
+            .setURL(cropUrl)
+        );
+        await interaction.editReply({
+          content: 'Clique sur le bouton ci-dessous pour choisir le cadrage de **' + target.title + '** :',
+          components: [row]
+        });
         return;
       }
     }
