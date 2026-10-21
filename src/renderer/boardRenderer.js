@@ -35,6 +35,15 @@ function roundRect(ctx, x, y, w, h, r) {
   ctx.closePath();
 }
 
+function hexToRgba(hex, alpha = 1) {
+  const clean = String(hex || '#f59e0b').replace('#', '');
+  if (clean.length !== 6) return `rgba(245, 158, 11, ${alpha})`;
+  const r = parseInt(clean.slice(0, 2), 16);
+  const g = parseInt(clean.slice(2, 4), 16);
+  const b = parseInt(clean.slice(4, 6), 16);
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
 function drawProceduralArtwork(ctx, x, y, w, h, theme = 'fantasy', seed = 1) {
   ctx.save();
   ctx.translate(x, y);
@@ -47,7 +56,7 @@ function drawProceduralArtwork(ctx, x, y, w, h, theme = 'fantasy', seed = 1) {
     ctx.fillStyle = sky;
     ctx.fillRect(0, 0, w, h);
 
-    const sun = ctx.createRadialGradient(w * 0.78, h * 0.35, 5, w * 0.78, h * 0.35, 240);
+    const sun = ctx.createRadialGradient(w * 0.78, h * 0.38, 5, w * 0.78, h * 0.38, 220);
     sun.addColorStop(0, 'rgba(255, 190, 90, 0.75)');
     sun.addColorStop(0.35, 'rgba(210, 95, 30, 0.35)');
     sun.addColorStop(1, 'rgba(20, 10, 5, 0)');
@@ -69,8 +78,8 @@ function drawProceduralArtwork(ctx, x, y, w, h, theme = 'fantasy', seed = 1) {
       ctx.closePath();
       ctx.fill();
     };
-    drawRidge(h * 0.62, 42, 'rgba(38, 19, 12, 0.85)', 1.2 + seed);
-    drawRidge(h * 0.74, 35, '#1b0d08', 2.7 + seed);
+    drawRidge(h * 0.62, 38, 'rgba(38, 19, 12, 0.85)', 1.2 + seed);
+    drawRidge(h * 0.76, 30, '#1b0d08', 2.7 + seed);
 
     ctx.fillStyle = '#120805';
     ctx.fillRect(w * 0.68, h * 0.36, 38, 70);
@@ -83,7 +92,7 @@ function drawProceduralArtwork(ctx, x, y, w, h, theme = 'fantasy', seed = 1) {
     ctx.fillStyle = '#fbbf24';
     ctx.fillRect(w * 0.73, h * 0.35, 4, 10);
 
-    drawRidge(h * 0.86, 22, '#0d0705', 4.1 + seed);
+    drawRidge(h * 0.88, 20, '#0d0705', 4.1 + seed);
   } else if (theme === 'cyberpunk') {
     const sky = ctx.createLinearGradient(0, 0, w, h);
     sky.addColorStop(0, '#060c17');
@@ -92,7 +101,7 @@ function drawProceduralArtwork(ctx, x, y, w, h, theme = 'fantasy', seed = 1) {
     ctx.fillStyle = sky;
     ctx.fillRect(0, 0, w, h);
 
-    const glow = ctx.createRadialGradient(w * 0.74, h * 0.58, 10, w * 0.74, h * 0.58, 280);
+    const glow = ctx.createRadialGradient(w * 0.74, h * 0.58, 10, w * 0.74, h * 0.58, 260);
     glow.addColorStop(0, 'rgba(14, 165, 233, 0.32)');
     glow.addColorStop(0.5, 'rgba(217, 70, 239, 0.15)');
     glow.addColorStop(1, 'rgba(0,0,0,0)');
@@ -100,17 +109,17 @@ function drawProceduralArtwork(ctx, x, y, w, h, theme = 'fantasy', seed = 1) {
     ctx.fillRect(0, 0, w, h);
 
     const buildings = [
-      { x: 460, y: 35, bw: 65, bh: 285, c: '#070d17' },
-      { x: 535, y: 18, bw: 82, bh: 302, c: '#050911' },
-      { x: 625, y: 52, bw: 58, bh: 268, c: '#08101c' },
-      { x: 690, y: 12, bw: 95, bh: 308, c: '#04080f' },
-      { x: 795, y: 40, bw: 70, bh: 280, c: '#070d17' },
-      { x: 875, y: 24, bw: 90, bh: 296, c: '#050911' }
+      { x: 460, y: 25, bw: 65, bh: h, c: '#070d17' },
+      { x: 535, y: 12, bw: 82, bh: h, c: '#050911' },
+      { x: 625, y: 40, bw: 58, bh: h, c: '#08101c' },
+      { x: 690, y: 8, bw: 95, bh: h, c: '#04080f' },
+      { x: 795, y: 30, bw: 70, bh: h, c: '#070d17' },
+      { x: 875, y: 18, bw: 90, bh: h, c: '#050911' }
     ];
     buildings.forEach((b, idx) => {
       ctx.fillStyle = b.c;
       ctx.fillRect(b.x, b.y, b.bw, b.bh);
-      for (let wy = b.y + 12; wy < h - 15; wy += 10) {
+      for (let wy = b.y + 12; wy < h - 12; wy += 10) {
         for (let wx = b.x + 8; wx < b.x + b.bw - 12; wx += 14) {
           if ((wx * wy + idx) % 5 === 0) {
             ctx.fillStyle = (wx + wy) % 7 === 0 ? 'rgba(244, 63, 94, 0.55)' : 'rgba(56, 189, 248, 0.45)';
@@ -127,7 +136,7 @@ function drawProceduralArtwork(ctx, x, y, w, h, theme = 'fantasy', seed = 1) {
     ctx.fillStyle = sky;
     ctx.fillRect(0, 0, w, h);
 
-    const moonGlow = ctx.createRadialGradient(w * 0.8, h * 0.3, 12, w * 0.8, h * 0.3, 160);
+    const moonGlow = ctx.createRadialGradient(w * 0.8, h * 0.32, 12, w * 0.8, h * 0.32, 150);
     moonGlow.addColorStop(0, 'rgba(226, 232, 240, 0.55)');
     moonGlow.addColorStop(0.3, 'rgba(148, 163, 184, 0.18)');
     moonGlow.addColorStop(1, 'rgba(0,0,0,0)');
@@ -135,19 +144,19 @@ function drawProceduralArtwork(ctx, x, y, w, h, theme = 'fantasy', seed = 1) {
     ctx.fillRect(0, 0, w, h);
     ctx.fillStyle = 'rgba(241, 245, 249, 0.75)';
     ctx.beginPath();
-    ctx.arc(w * 0.8, h * 0.3, 24, 0, Math.PI * 2);
+    ctx.arc(w * 0.8, h * 0.32, 24, 0, Math.PI * 2);
     ctx.fill();
 
     ctx.fillStyle = '#070a0d';
-    ctx.fillRect(620, 95, 95, 160);
+    ctx.fillRect(620, 85, 95, 160);
     ctx.beginPath();
-    ctx.moveTo(612, 95);
-    ctx.lineTo(667, 45);
-    ctx.lineTo(722, 95);
+    ctx.moveTo(612, 85);
+    ctx.lineTo(667, 35);
+    ctx.lineTo(722, 85);
     ctx.fill();
     ctx.fillStyle = 'rgba(253, 224, 71, 0.65)';
-    ctx.fillRect(662, 112, 8, 14);
-    ctx.fillRect(674, 112, 8, 14);
+    ctx.fillRect(662, 102, 8, 14);
+    ctx.fillRect(674, 102, 8, 14);
   } else {
     const sky = ctx.createLinearGradient(0, 0, w, h);
     sky.addColorStop(0, '#14090d');
@@ -156,23 +165,23 @@ function drawProceduralArtwork(ctx, x, y, w, h, theme = 'fantasy', seed = 1) {
     ctx.fillStyle = sky;
     ctx.fillRect(0, 0, w, h);
 
-    const bloodMoon = ctx.createRadialGradient(w * 0.77, h * 0.33, 10, w * 0.77, h * 0.33, 190);
+    const bloodMoon = ctx.createRadialGradient(w * 0.77, h * 0.33, 10, w * 0.77, h * 0.33, 180);
     bloodMoon.addColorStop(0, 'rgba(225, 29, 72, 0.45)');
     bloodMoon.addColorStop(1, 'rgba(0,0,0,0)');
     ctx.fillStyle = bloodMoon;
     ctx.fillRect(0, 0, w, h);
 
     ctx.fillStyle = '#090608';
-    ctx.fillRect(660, 75, 85, 205);
+    ctx.fillRect(660, 65, 85, 195);
     ctx.beginPath();
-    ctx.moveTo(655, 75);
-    ctx.lineTo(680, 18);
-    ctx.lineTo(705, 75);
+    ctx.moveTo(655, 65);
+    ctx.lineTo(680, 14);
+    ctx.lineTo(705, 65);
     ctx.fill();
     ctx.beginPath();
-    ctx.moveTo(700, 75);
-    ctx.lineTo(725, 18);
-    ctx.lineTo(750, 75);
+    ctx.moveTo(700, 65);
+    ctx.lineTo(725, 14);
+    ctx.lineTo(750, 65);
     ctx.fill();
   }
 
@@ -214,28 +223,32 @@ function drawPlayerToken(ctx, player, cx, cy, radius, borderColor, alpha = 1) {
 }
 
 /**
- * Génère le Buffer PNG du Méga-Dashboard regroupant toutes les campagnes JDR.
+ * Génère le Buffer PNG du Méga-Dashboard en combinant :
+ * - Concept 1 : Fond 100 % transparent entre les cartes, grand espacement (52px), cadre & liseré gauche à la couleur du @Rôle
+ * - Concept 2 : Carte en 2 étages (Bannière illustrée 100 % dégagée en haut + Tiroir calendrier dédié en bas)
  */
 async function renderDashboardBuffer(enrichedCampaigns) {
   const width = 1000;
-  const cardH = 330;
-  const gap = 22;
-  const pad = 24;
+  const bannerH = 225; // Étage 1 : Bannière pure
+  const drawerH = 155; // Étage 2 : Tiroir calendrier sous la bannière
+  const cardH = bannerH + drawerH; // 380px par JDR
+  const gap = 52; // Grand espace transparent entre chaque JDR
+  const pad = 12;
 
   if (!enrichedCampaigns || enrichedCampaigns.length === 0) {
-    const emptyCanvas = createCanvas(width, 180);
+    const emptyCanvas = createCanvas(width, 160);
     const ctx = emptyCanvas.getContext('2d');
-    ctx.fillStyle = '#090a0d';
-    ctx.fillRect(0, 0, width, 180);
-    roundRect(ctx, 24, 24, width - 48, 132, 12);
+    ctx.clearRect(0, 0, width, 160);
+    roundRect(ctx, 12, 12, width - 24, 136, 14);
     ctx.fillStyle = '#111318';
     ctx.fill();
-    ctx.strokeStyle = 'rgba(255,255,255,0.1)';
+    ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+    ctx.lineWidth = 2;
     ctx.stroke();
     ctx.fillStyle = '#94a3b8';
     ctx.font = '700 24px sans-serif';
     ctx.textAlign = 'center';
-    ctx.fillText('Aucune table JDR active.', width / 2, 98);
+    ctx.fillText('Aucune table JDR active.', width / 2, 88);
     return emptyCanvas.toBuffer('image/png');
   }
 
@@ -260,115 +273,145 @@ async function renderDashboardBuffer(enrichedCampaigns) {
   const canvas = createCanvas(width, totalH);
   const ctx = canvas.getContext('2d');
 
-  ctx.fillStyle = '#090a0d';
-  ctx.fillRect(0, 0, width, totalH);
+  // Concept 1 : Fond global 100 % transparent pour que Discord sépare visuellement chaque carte
+  ctx.clearRect(0, 0, width, totalH);
 
   enrichedCampaigns.forEach((c, index) => {
     const x = pad;
     const y = pad + index * (cardH + gap);
     const w = width - pad * 2;
     const h = cardH;
+    const accentColor = c.roleColor || '#f59e0b';
     const weekDays = getWeekDaysFromMonday(c.weekMondayISO);
     const players = c.players || [];
 
+    // Ombre portée externe sous chaque carte JDR
     ctx.save();
-    roundRect(ctx, x, y, w, h, 14);
+    ctx.shadowColor = 'rgba(0, 0, 0, 0.65)';
+    ctx.shadowBlur = 16;
+    ctx.shadowOffsetY = 6;
+    roundRect(ctx, x, y, w, h, 16);
+    ctx.fillStyle = '#0d0f14';
+    ctx.fill();
+    ctx.restore();
+
+    ctx.save();
+    roundRect(ctx, x, y, w, h, 16);
     ctx.clip();
 
-    // 1. Bannière de fond
+    // =========================================================================
+    // ÉTAGE 1 (HAUT) : BANNIÈRE ILLUSTRÉE 100 % DÉGAGÉE (hauteur = bannerH)
+    // =========================================================================
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(x, y, w, bannerH);
+    ctx.clip();
+
     if (c.bannerImg) {
       const imgRatio = c.bannerImg.width / c.bannerImg.height;
-      const boxRatio = w / h;
+      const boxRatio = w / bannerH;
       let drawW = w;
-      let drawH = h;
+      let drawH = bannerH;
       let offsetX = x;
       let offsetY = y;
       if (imgRatio > boxRatio) {
-        drawW = h * imgRatio;
+        drawW = bannerH * imgRatio;
         offsetX = x - (drawW - w) / 2;
       } else {
         drawH = w / imgRatio;
-        offsetY = y - (drawH - h) / 2;
+        offsetY = y - (drawH - bannerH) / 2;
       }
       ctx.drawImage(c.bannerImg, offsetX, offsetY, drawW, drawH);
     } else {
-      drawProceduralArtwork(ctx, x, y, w, h, c.theme || 'fantasy', index + 1);
+      drawProceduralArtwork(ctx, x, y, w, bannerH, c.theme || 'fantasy', index + 1);
     }
 
-    // 2. Fondus ciblés en haut et en bas pour conserver la visibilité de la bannière
-    const topGrad = ctx.createLinearGradient(x, y, x, y + 115);
-    topGrad.addColorStop(0, 'rgba(8, 9, 13, 0.85)');
-    topGrad.addColorStop(0.7, 'rgba(8, 9, 13, 0.45)');
-    topGrad.addColorStop(1, 'rgba(8, 9, 13, 0)');
-    ctx.fillStyle = topGrad;
-    ctx.fillRect(x, y, w, 115);
+    // Léger dégradé latéral gauche uniquement derrière le titre et le badge MJ
+    const leftGrad = ctx.createLinearGradient(x, y, x + w * 0.65, y);
+    leftGrad.addColorStop(0, 'rgba(8, 10, 15, 0.78)');
+    leftGrad.addColorStop(0.55, 'rgba(8, 10, 15, 0.25)');
+    leftGrad.addColorStop(1, 'rgba(8, 10, 15, 0)');
+    ctx.fillStyle = leftGrad;
+    ctx.fillRect(x, y, w * 0.65, bannerH);
 
-    const bottomGrad = ctx.createLinearGradient(x, y + h - 180, x, y + h);
-    bottomGrad.addColorStop(0, 'rgba(8, 9, 13, 0)');
-    bottomGrad.addColorStop(0.35, 'rgba(8, 9, 13, 0.65)');
-    bottomGrad.addColorStop(1, 'rgba(8, 9, 13, 0.92)');
-    ctx.fillStyle = bottomGrad;
-    ctx.fillRect(x, y + h - 180, w, 180);
+    // Léger fondu en bas de la bannière vers le tiroir
+    const bannerBottomGrad = ctx.createLinearGradient(x, y + bannerH - 45, x, y + bannerH);
+    bannerBottomGrad.addColorStop(0, 'rgba(13, 15, 20, 0)');
+    bannerBottomGrad.addColorStop(1, 'rgba(13, 15, 20, 0.95)');
+    ctx.fillStyle = bannerBottomGrad;
+    ctx.fillRect(x, y + bannerH - 45, w, 45);
 
-    // 3. Titre du JDR grand format + Ombre portée franche
+    // Titre du JDR en grand
     ctx.save();
     ctx.shadowColor = 'rgba(0, 0, 0, 0.95)';
-    ctx.shadowBlur = 10;
+    ctx.shadowBlur = 12;
     ctx.shadowOffsetX = 0;
-    ctx.shadowOffsetY = 2;
+    ctx.shadowOffsetY = 3;
     ctx.fillStyle = '#ffffff';
-    ctx.font = '900 36px Georgia, serif';
-    ctx.fillText(c.title, x + 26, y + 48);
+    ctx.font = '900 38px Georgia, serif';
+    ctx.fillText(c.title, x + 32, y + 54);
     ctx.restore();
 
-    // Badge lisible pour @Rôle et MJ
+    // Badge @Rôle & MJ
     const roleLabel = c.roleName.startsWith('@') ? c.roleName : `@${c.roleName}`;
     const mjLabel = `MJ : ${c.mjName}`;
-    ctx.font = '700 19px sans-serif';
+    ctx.font = '700 20px sans-serif';
     const roleWidth = ctx.measureText(roleLabel).width;
     const mjWidth = ctx.measureText(mjLabel).width;
-    const badgeW = roleWidth + mjWidth + 46;
+    const badgeW = roleWidth + mjWidth + 50;
 
-    roundRect(ctx, x + 26, y + 62, badgeW, 34, 8);
-    ctx.fillStyle = 'rgba(10, 12, 18, 0.78)';
+    roundRect(ctx, x + 32, y + 70, badgeW, 38, 9);
+    ctx.fillStyle = 'rgba(10, 12, 18, 0.85)';
     ctx.fill();
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.18)';
-    ctx.lineWidth = 1;
+    ctx.strokeStyle = hexToRgba(accentColor, 0.55);
+    ctx.lineWidth = 1.5;
     ctx.stroke();
 
-    ctx.fillStyle = c.roleColor || '#fbbf24';
-    ctx.fillText(roleLabel, x + 38, y + 85);
+    ctx.fillStyle = accentColor;
+    ctx.fillText(roleLabel, x + 46, y + 96);
 
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.4)';
-    ctx.fillText('·', x + 46 + roleWidth, y + 85);
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.45)';
+    ctx.fillText('·', x + 54 + roleWidth, y + 96);
 
-    ctx.fillStyle = '#f1f5f9';
-    ctx.fillText(mjLabel, x + 58 + roleWidth, y + 85);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText(mjLabel, x + 66 + roleWidth, y + 96);
 
-    // Avatars des membres du @Rôle en haut à droite (plus grands : rayon 23px)
-    let curX = x + w - 26;
+    // Avatars des membres du @Rôle en haut à droite sur la bannière
+    let curX = x + w - 28;
     for (let i = players.length - 1; i >= 0; i--) {
       const p = players[i];
       const isReady = c.status === 'confirmed' || p.voted;
-      curX -= 23;
+      curX -= 25;
       drawPlayerToken(
         ctx,
         p,
         curX,
-        y + 48,
-        23,
-        isReady ? '#10b981' : 'rgba(255,255,255,0.28)',
-        isReady ? 1 : 0.5
+        y + 52,
+        25,
+        isReady ? '#10b981' : 'rgba(255,255,255,0.35)',
+        isReady ? 1 : 0.55
       );
-      curX -= 32;
+      curX -= 34;
     }
 
-    // 4. Zone inférieure selon le statut ('confirmed' | 'unavailable' | 'poll')
+    ctx.restore();
+
+    // =========================================================================
+    // ÉTAGE 2 (BAS) : TIROIR CALENDRIER DÉDIÉ SOUS LA BANNIÈRE (hauteur = drawerH)
+    // =========================================================================
+    const drawerY = y + bannerH;
+    ctx.fillStyle = '#0e1017';
+    ctx.fillRect(x, drawerY, w, drawerH);
+
+    // Ligne de séparation lumineuse à la couleur du @Rôle entre la bannière et le tiroir
+    ctx.fillStyle = hexToRgba(accentColor, 0.75);
+    ctx.fillRect(x, drawerY, w, 3);
+
     if (c.status === 'confirmed' && c.confirmedDateISO) {
       const fullDateStr = formatFullDateFR(c.confirmedDateISO).toUpperCase();
 
-      roundRect(ctx, x + 24, y + 182, w - 48, 124, 12);
-      ctx.fillStyle = 'rgba(10, 22, 18, 0.85)';
+      roundRect(ctx, x + 28, drawerY + 18, w - 56, drawerH - 34, 12);
+      ctx.fillStyle = 'rgba(16, 185, 129, 0.14)';
       ctx.fill();
       ctx.strokeStyle = '#34d399';
       ctx.lineWidth = 2;
@@ -376,22 +419,22 @@ async function renderDashboardBuffer(enrichedCampaigns) {
 
       ctx.fillStyle = '#34d399';
       ctx.font = '800 16px sans-serif';
-      ctx.fillText('PROCHAINE SESSION', x + 44, y + 218);
+      ctx.fillText('PROCHAINE SESSION', x + 48, drawerY + 52);
 
       ctx.fillStyle = '#ffffff';
       ctx.font = '900 34px sans-serif';
-      ctx.fillText(`${fullDateStr}  —  ${c.time}`, x + 44, y + 268);
+      ctx.fillText(`${fullDateStr}  —  ${c.time}`, x + 48, drawerY + 102);
 
-      let tokenX = x + w - 60;
+      let tokenX = x + w - 64;
       players.slice().reverse().forEach(p => {
-        drawPlayerToken(ctx, p, tokenX, y + 244, 26, '#34d399', 1);
+        drawPlayerToken(ctx, p, tokenX, drawerY + 78, 26, '#34d399', 1);
         tokenX -= 44;
       });
     } else if (c.status === 'unavailable' && c.unavailableUntilISO) {
       const untilStr = formatDayMonthFR(c.unavailableUntilISO);
 
-      roundRect(ctx, x + 24, y + 182, w - 48, 124, 12);
-      ctx.fillStyle = 'rgba(28, 10, 16, 0.85)';
+      roundRect(ctx, x + 28, drawerY + 18, w - 56, drawerH - 34, 12);
+      ctx.fillStyle = 'rgba(244, 63, 94, 0.14)';
       ctx.fill();
       ctx.strokeStyle = 'rgba(244, 63, 94, 0.65)';
       ctx.lineWidth = 2;
@@ -399,15 +442,15 @@ async function renderDashboardBuffer(enrichedCampaigns) {
 
       ctx.fillStyle = '#fda4af';
       ctx.font = '800 28px sans-serif';
-      ctx.fillText(`Joueurs non disponibles jusqu'au ${untilStr}.`, x + 44, y + 254);
+      ctx.fillText(`Joueurs non disponibles jusqu'au ${untilStr}.`, x + 48, drawerY + 88);
     } else {
-      // Sondage en cours : 7 colonnes (LUN .. DIM) très lisibles
-      const gridX = x + 24;
-      const gridY = y + 174;
-      const gridW = w - 48;
+      // Grille des 7 jours dans le tiroir inférieur
+      const gridX = x + 28;
+      const gridY = drawerY + 16;
+      const gridW = w - 56;
       const colGap = 8;
       const colW = (gridW - colGap * 6) / 7;
-      const colH = 132;
+      const colH = drawerH - 30;
 
       weekDays.forEach((d, dayIdx) => {
         const cx = gridX + dayIdx * (colW + colGap);
@@ -415,28 +458,27 @@ async function renderDashboardBuffer(enrichedCampaigns) {
         const isFull = availPlayers.length === players.length && players.length > 0;
 
         roundRect(ctx, cx, gridY, colW, colH, 10);
-        ctx.fillStyle = isFull ? 'rgba(16, 185, 129, 0.32)' : 'rgba(12, 14, 20, 0.88)';
+        ctx.fillStyle = isFull ? 'rgba(16, 185, 129, 0.28)' : '#161922';
         ctx.fill();
-        ctx.strokeStyle = isFull ? '#34d399' : 'rgba(255, 255, 255, 0.18)';
+        ctx.strokeStyle = isFull ? '#34d399' : 'rgba(255, 255, 255, 0.14)';
         ctx.lineWidth = 1.5;
         ctx.stroke();
 
-        // Nom du jour + Date en grand (19px)
         ctx.fillStyle = isFull ? '#34d399' : '#ffffff';
         ctx.font = '800 18px sans-serif';
         ctx.textAlign = 'center';
         ctx.fillText(`${d.code} ${d.dayNum}`, cx + colW / 2, gridY + 28);
 
-        ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+        ctx.strokeStyle = 'rgba(255,255,255,0.1)';
         ctx.beginPath();
-        ctx.moveTo(cx + 10, gridY + 40);
-        ctx.lineTo(cx + colW - 10, gridY + 40);
+        ctx.moveTo(cx + 10, gridY + 38);
+        ctx.lineTo(cx + colW - 10, gridY + 38);
         ctx.stroke();
 
         if (availPlayers.length === 0) {
-          ctx.fillStyle = 'rgba(255,255,255,0.28)';
+          ctx.fillStyle = 'rgba(255,255,255,0.25)';
           ctx.font = '700 16px sans-serif';
-          ctx.fillText('—', cx + colW / 2, gridY + 90);
+          ctx.fillText('—', cx + colW / 2, gridY + 86);
         } else {
           const r = 19;
           const spacing = Math.min(28, (colW - 38) / Math.max(1, availPlayers.length - 1));
@@ -444,16 +486,21 @@ async function renderDashboardBuffer(enrichedCampaigns) {
           const startAvX = cx + colW / 2 - totalRowW / 2;
 
           availPlayers.forEach((p, idx) => {
-            drawPlayerToken(ctx, p, startAvX + idx * spacing, gridY + 84, r, '#38bdf8', 1);
+            drawPlayerToken(ctx, p, startAvX + idx * spacing, gridY + 80, r, accentColor, 1);
           });
         }
         ctx.textAlign = 'left';
       });
     }
 
-    roundRect(ctx, x, y, w, h, 14);
-    ctx.strokeStyle = 'rgba(255,255,255,0.18)';
-    ctx.lineWidth = 1.5;
+    // Barre latérale gauche franche de 8px à la couleur du @Rôle sur toute la hauteur de la carte
+    ctx.fillStyle = accentColor;
+    ctx.fillRect(x, y, 8, h);
+
+    // Cadre extérieur coloré à la couleur du @Rôle
+    roundRect(ctx, x, y, w, h, 16);
+    ctx.strokeStyle = hexToRgba(accentColor, 0.85);
+    ctx.lineWidth = 3;
     ctx.stroke();
 
     ctx.restore();
