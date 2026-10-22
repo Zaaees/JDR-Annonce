@@ -19,7 +19,8 @@ const {
   submitPlayerVote,
   setManualSessionDate,
   clearSessionDate,
-  restartCampaignPoll
+  restartCampaignPoll,
+  setCampaignStatus
 } = require('../storage/store');
 const {
   getWeekDaysFromMonday,
@@ -219,7 +220,7 @@ function buildMJControlPanel(campaign) {
 
   const quickDaySelect = new StringSelectMenuBuilder()
     .setCustomId(`mj_set_day:${campaign.id}`)
-    .setPlaceholder('Définir la date de la session...')
+    .setPlaceholder('Fixer la date manuellement...')
     .addOptions(
       weekDays.map(d => ({
         label: campaign.time ? `${d.fullLabel} (${campaign.time})` : d.fullLabel,
@@ -246,23 +247,89 @@ function buildMJControlPanel(campaign) {
         .setStyle(ButtonStyle.Danger)
     );
     rows.push(sessionRow);
+
+    const statusRow = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`mj_pause:${campaign.id}`)
+        .setLabel('⏸️ Mettre en pause')
+        .setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setCustomId(`mj_prep:${campaign.id}`)
+        .setLabel('📝 Préparation MJ en cours')
+        .setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setCustomId(`mj_delete:${campaign.id}`)
+        .setLabel('Supprimer la table')
+        .setStyle(ButtonStyle.Danger)
+    );
+    rows.push(statusRow);
+  } else if (campaign.status === 'paused') {
+    const pausedRow = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`mj_resume_poll:${campaign.id}`)
+        .setLabel('▶️ Reprendre le sondage')
+        .setStyle(ButtonStyle.Success),
+      new ButtonBuilder()
+        .setCustomId(`mj_prep:${campaign.id}`)
+        .setLabel('📝 Préparation MJ en cours')
+        .setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setCustomId(`mj_delete:${campaign.id}`)
+        .setLabel('Supprimer la table')
+        .setStyle(ButtonStyle.Danger)
+    );
+    rows.push(pausedRow);
+  } else if (campaign.status === 'prep') {
+    const prepRow = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`mj_resume_poll:${campaign.id}`)
+        .setLabel('▶️ Lancer le sondage')
+        .setStyle(ButtonStyle.Success),
+      new ButtonBuilder()
+        .setCustomId(`mj_pause:${campaign.id}`)
+        .setLabel('⏸️ Mettre en pause')
+        .setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setCustomId(`mj_delete:${campaign.id}`)
+        .setLabel('Supprimer la table')
+        .setStyle(ButtonStyle.Danger)
+    );
+    rows.push(prepRow);
+  } else {
+    // Statut 'poll' ou 'unavailable'
+    const pollRow = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`mj_pause:${campaign.id}`)
+        .setLabel('⏸️ Mettre en pause')
+        .setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setCustomId(`mj_prep:${campaign.id}`)
+        .setLabel('📝 Préparation MJ en cours')
+        .setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setCustomId(`mj_restart_poll:${campaign.id}`)
+        .setLabel('🔄 Réinitialiser le sondage')
+        .setStyle(ButtonStyle.Secondary)
+    );
+    rows.push(pollRow);
+
+    const deleteRow = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`mj_delete:${campaign.id}`)
+        .setLabel('Supprimer la table')
+        .setStyle(ButtonStyle.Danger)
+    );
+    rows.push(deleteRow);
   }
 
-  const tableRow = new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId(`mj_restart_poll:${campaign.id}`)
-      .setLabel('Relancer le sondage')
-      .setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder()
-      .setCustomId(`mj_delete:${campaign.id}`)
-      .setLabel('Supprimer la table')
-      .setStyle(ButtonStyle.Danger)
-  );
-
-  rows.push(tableRow);
+  let statusBadge = 'Sondage en cours';
+  if (campaign.status === 'confirmed') statusBadge = 'Date confirmée';
+  if (campaign.status === 'paused') statusBadge = 'Table en pause';
+  if (campaign.status === 'prep') statusBadge = 'Préparation MJ en cours';
+  if (campaign.status === 'unavailable') statusBadge = 'Joueurs non disponibles';
 
   return {
-    content: `**${campaign.title}** — Gestion MJ`,
+    content: `**${campaign.title}** — Gestion MJ (Statut : *${statusBadge}*)`,
     components: rows,
     allowedMentions: { parse: [] }
   };
@@ -494,8 +561,25 @@ async function handleInteraction(client, interaction) {
 
       if (campaign.status === 'confirmed' && campaign.confirmedDateISO) {
         const dateStr = formatFullDateFR(campaign.confirmedDateISO);
+        const timeInfo = campaign.time ? ` à ${campaign.time}` : '';
         await interaction.reply({
-          content: `La prochaine session pour **${campaign.title}** est déjà fixée au **${dateStr} à ${campaign.time}**.`,
+          content: `La prochaine session pour **${campaign.title}** est déjà fixée au **${dateStr}${timeInfo}**.`,
+          flags: MessageFlags.Ephemeral
+        });
+        return;
+      }
+
+      if (campaign.status === 'paused') {
+        await interaction.reply({
+          content: `La table **${campaign.title}** est actuellement en pause. Le MJ préviendra lors de la reprise des sessions !`,
+          flags: MessageFlags.Ephemeral
+        });
+        return;
+      }
+
+      if (campaign.status === 'prep') {
+        await interaction.reply({
+          content: `Le MJ est actuellement en **préparation de session** pour **${campaign.title}**. Le sondage sera lancé dès qu'il sera prêt !`,
           flags: MessageFlags.Ephemeral
         });
         return;
@@ -908,6 +992,45 @@ async function handleInteraction(client, interaction) {
       }
 
       await interaction.deferUpdate();
+
+      if (action === 'mj_pause') {
+        await deleteCampaignPing(client, guildId, campaign);
+        const updated = setCampaignStatus(guildId, campaignId, 'paused');
+        await refreshDashboardMessage(client, guildId);
+        await interaction.editReply({
+          content: `Table **${updated.title}** mise en pause. Le sondage est arrêté et l'affiche indique la pause.`,
+          components: []
+        });
+        return;
+      }
+
+      if (action === 'mj_prep') {
+        await deleteCampaignPing(client, guildId, campaign);
+        const updated = setCampaignStatus(guildId, campaignId, 'prep');
+        await refreshDashboardMessage(client, guildId);
+        await interaction.editReply({
+          content: `Table **${updated.title}** passée en **Préparation MJ en cours**. L'affiche a été mise à jour.`,
+          components: []
+        });
+        return;
+      }
+
+      if (action === 'mj_resume_poll') {
+        const updated = setCampaignStatus(guildId, campaignId, 'poll');
+        await refreshDashboardMessage(client, guildId);
+        const weekDays = getWeekDaysFromMonday(updated.weekMondayISO);
+        await sendRolePing(
+          client,
+          guildId,
+          updated,
+          `Sondage de disponibilité ouvert pour **${updated.title}** (semaine du ${weekDays[0].fullLabel}).`
+        );
+        await interaction.editReply({
+          content: `Sondage lancé pour **${updated.title}** (semaine du ${weekDays[0].fullLabel}).`,
+          components: []
+        });
+        return;
+      }
 
       if (action === 'mj_restart_poll') {
         const updated = restartCampaignPoll(guildId, campaignId, { nextWeek: false });

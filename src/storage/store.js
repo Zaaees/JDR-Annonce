@@ -334,6 +334,35 @@ function restartCampaignPoll(guildId, campaignId, { nextWeek = false } = {}) {
 }
 
 /**
+ * Modifie le statut de la table ('poll', 'paused', 'prep')
+ */
+function setCampaignStatus(guildId, campaignId, newStatus) {
+  const { state, guild } = getGuildState(guildId);
+  const c = guild.campaigns.find(x => x.id === campaignId);
+  if (!c) return null;
+
+  c.status = newStatus;
+  if (newStatus === 'paused' || newStatus === 'prep') {
+    c.confirmedDateISO = null;
+    c.time = null;
+    c.votes = {};
+    c.failedWeeksCount = 0;
+    c.unavailableUntilISO = null;
+  } else if (newStatus === 'poll') {
+    const now = new Date();
+    const offset = now.getDay() === 0 ? 1 : 0;
+    c.weekMondayISO = getMondayISO(now, offset);
+    c.confirmedDateISO = null;
+    c.time = null;
+    c.votes = {};
+    c.failedWeeksCount = 0;
+    c.unavailableUntilISO = null;
+  }
+  saveState(state);
+  return c;
+}
+
+/**
  * Le passage automatique est désactivé : c'est le MJ qui clôture la session quand il le souhaite.
  */
 function checkAndRollOverFinishedSessions() {
@@ -355,5 +384,6 @@ module.exports = {
   setManualSessionDate,
   clearSessionDate,
   restartCampaignPoll,
+  setCampaignStatus,
   checkAndRollOverFinishedSessions
 };

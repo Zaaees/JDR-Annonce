@@ -448,6 +448,36 @@ function drawCampaignCard(ctx, c, index, x, y, w, h = CARD_H, withShadow = true)
         drawPlayerToken(ctx, p, tokenX, drawerY + 84, 28, '#34d399', 1);
         tokenX -= 44;
       });
+    } else if (c.status === 'paused') {
+      roundRect(ctx, x + 28, drawerY + 18, w - 56, drawerH - 34, 12);
+      ctx.fillStyle = 'rgba(245, 158, 11, 0.12)';
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(245, 158, 11, 0.65)';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+
+      ctx.fillStyle = '#f59e0b';
+      ctx.font = '800 20px sans-serif';
+      ctx.fillText('STATUT DE LA TABLE', x + 48, drawerY + 56);
+
+      ctx.fillStyle = '#ffffff';
+      ctx.font = '900 38px sans-serif';
+      ctx.fillText('Table en pause', x + 48, drawerY + 108);
+    } else if (c.status === 'prep') {
+      roundRect(ctx, x + 28, drawerY + 18, w - 56, drawerH - 34, 12);
+      ctx.fillStyle = 'rgba(99, 102, 241, 0.14)';
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(129, 140, 248, 0.65)';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+
+      ctx.fillStyle = '#818cf8';
+      ctx.font = '800 20px sans-serif';
+      ctx.fillText('STATUT DU MAÎTRE DU JEU', x + 48, drawerY + 56);
+
+      ctx.fillStyle = '#ffffff';
+      ctx.font = '900 38px sans-serif';
+      ctx.fillText('Préparation MJ en cours', x + 48, drawerY + 108);
     } else if (c.status === 'unavailable' && c.unavailableUntilISO) {
       const untilStr = formatDayMonthFR(c.unavailableUntilISO);
 

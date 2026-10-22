@@ -87,6 +87,21 @@ async function runTests() {
   }, 0);
   assert.ok(Buffer.isBuffer(singleCardBuffer) && singleCardBuffer.length > 5000, 'Le buffer PNG de la carte individuelle doit être valide');
 
+  // Test des états "paused" et "prep"
+  const pausedBuffer = await renderCampaignCardBuffer({
+    ...res3.campaign,
+    status: 'paused',
+    players: []
+  }, 0);
+  assert.ok(Buffer.isBuffer(pausedBuffer) && pausedBuffer.length > 5000, 'Le buffer PNG de la table en pause doit être valide');
+
+  const prepBuffer = await renderCampaignCardBuffer({
+    ...res3.campaign,
+    status: 'prep',
+    players: []
+  }, 0);
+  assert.ok(Buffer.isBuffer(prepBuffer) && prepBuffer.length > 5000, 'Le buffer PNG de la table en préparation doit être valide');
+
   // 4. Test de la sauvegarde et restauration d'état intégrée dans les métadonnées du PNG (pour Render Free)
   const { guild: guildStateBefore } = getGuildState(testGuildId);
   const pngWithState = embedStateInPng(pngBuffer, guildStateBefore);

@@ -173,11 +173,25 @@ async function refreshDashboardMessage(client, guildId) {
       const mediaItem = new MediaGalleryItemBuilder().setURL(`attachment://${fileName}`);
       const mediaGallery = new MediaGalleryBuilder().addItems(mediaItem);
 
+      let voteLabel = '🎲 Voter';
+      let voteDisabled = false;
+      if (c.status === 'paused') {
+        voteLabel = '⏸️ Table en pause';
+        voteDisabled = true;
+      } else if (c.status === 'prep') {
+        voteLabel = '📝 Préparation en cours';
+        voteDisabled = true;
+      } else if (c.status === 'confirmed') {
+        voteLabel = '✅ Session fixée';
+        voteDisabled = true;
+      }
+
       const buttonsRow = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
           .setCustomId(`vote_open:${c.id}`)
-          .setLabel('🎲 Voter')
-          .setStyle(ButtonStyle.Primary),
+          .setLabel(voteLabel)
+          .setStyle(voteDisabled ? ButtonStyle.Secondary : ButtonStyle.Primary)
+          .setDisabled(voteDisabled),
         new ButtonBuilder()
           .setCustomId(`mj_open:${c.id}`)
           .setLabel('Gérer (MJ)')
