@@ -18,6 +18,7 @@ const {
 } = require('../storage/store');
 const { renderDashboardBuffer, renderCampaignCardBuffer } = require('../renderer/boardRenderer');
 const { embedStateInPng, extractStateFromPng } = require('../utils/pngState');
+const { saveBackupToDiscord, restoreBackupFromDiscord } = require('../storage/discordBackup');
 
 /**
  * Récupère tous les membres humains possédant le @Rôle Discord d'une campagne.
@@ -246,6 +247,9 @@ async function refreshDashboardMessage(client, guildId) {
     }
   }
 
+  // Sauvegarde permanente sur Discord (#jdr-donnees) pour survivre aux redémarrages de Render
+  await saveBackupToDiscord(client, guildId).catch(() => null);
+
   // Nettoie tout message obsolète dans le salon
   await cleanupObsoleteChannelMessages(client, guildId, channel).catch(() => null);
 
@@ -295,15 +299,22 @@ async function tryRestoreStateFromMessage(guildId, message) {
 }
 
 /**
- * Au démarrage du bot, inspecte les salons des serveurs pour retrouver `sessions-jdr.png` et restaurer les données.
+ * Au démarrage du bot, restaure automatiquement les données depuis Discord (#jdr-donnees ou DM).
  */
 async function autoRecoverGuildsFromDiscord(client) {
   for (const [guildId, discordGuild] of client.guilds.cache) {
-    const { guild: localGuild } = getGuildState(guildId);
+    let { guild: localGuild } = getGuildState(guildId);
     if (localGuild.campaigns && localGuild.campaigns.length > 0) {
       continue;
     }
 
+    // 1. Restauration prioritaire depuis le salon dédié #jdr-donnees ou DM
+    const restored = await restoreBackupFromDiscord(client, guildId);
+    if (restored && restored.campaigns && restored.campaigns.length > 0) {
+      continue;
+    }
+
+    // 2. Repli legacy si le salon #jdr-donnees n'était pas encore créé
     try {
       const channels = await discordGuild.channels.fetch();
       const textChannels = Array.from(channels.values())

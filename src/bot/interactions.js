@@ -31,6 +31,7 @@ const {
   sendRolePing
 } = require('./dashboardManager');
 const { createCropSession } = require('../server/cropServer');
+const { restoreBackupFromDiscord } = require('../storage/discordBackup');
 
 // Sélections en cours (avant clic sur "Valider") : Map<`${campaignId}:${userId}`, Set<number>>
 const draftSelections = new Map();
@@ -456,6 +457,14 @@ async function handleInteraction(client, interaction) {
       let { guild: guildData } = getGuildState(guildId);
       let campaign = guildData.campaigns.find(c => c.id === campaignId);
 
+      if (!campaign) {
+        const restored = await restoreBackupFromDiscord(client, guildId);
+        if (restored) {
+          guildData = restored;
+          campaign = guildData.campaigns.find(c => c.id === campaignId);
+        }
+      }
+
       if (!campaign && interaction.message) {
         const restored = await tryRestoreStateFromMessage(guildId, interaction.message);
         if (restored) {
@@ -466,7 +475,7 @@ async function handleInteraction(client, interaction) {
 
       if (!campaign) {
         await interaction.reply({
-          content: 'Cette table n’existe plus.',
+          content: 'Cette table n’existe plus. Vous pouvez en créer une nouvelle avec `/jdr creer`.',
           flags: MessageFlags.Ephemeral
         });
         return;
@@ -522,6 +531,14 @@ async function handleInteraction(client, interaction) {
       let { guild: guildData } = getGuildState(guildId);
       let campaign = guildData.campaigns.find(c => c.id === campaignId);
 
+      if (!campaign) {
+        const restored = await restoreBackupFromDiscord(client, guildId);
+        if (restored) {
+          guildData = restored;
+          campaign = guildData.campaigns.find(c => c.id === campaignId);
+        }
+      }
+
       if (!campaign && interaction.message) {
         const restored = await tryRestoreStateFromMessage(guildId, interaction.message);
         if (restored) {
@@ -532,7 +549,7 @@ async function handleInteraction(client, interaction) {
 
       if (!campaign) {
         await interaction.reply({
-          content: 'Cette table n’existe plus.',
+          content: 'Cette table n’existe plus. Vous pouvez en créer une nouvelle avec `/jdr creer`.',
           flags: MessageFlags.Ephemeral
         });
         return;
@@ -564,6 +581,14 @@ async function handleInteraction(client, interaction) {
       let { guild: guildData } = getGuildState(guildId);
       let campaign = guildData.campaigns.find(c => c.id === campaignId);
 
+      if (!campaign) {
+        const restored = await restoreBackupFromDiscord(client, guildId);
+        if (restored) {
+          guildData = restored;
+          campaign = guildData.campaigns.find(c => c.id === campaignId);
+        }
+      }
+
       if (!campaign && interaction.message) {
         const restored = await tryRestoreStateFromMessage(guildId, interaction.message);
         if (restored) {
@@ -574,7 +599,7 @@ async function handleInteraction(client, interaction) {
 
       if (!campaign) {
         await interaction.reply({
-          content: 'Cette table n’existe plus.',
+          content: 'Cette table n’existe plus. Vous pouvez en créer une nouvelle avec `/jdr creer`.',
           flags: MessageFlags.Ephemeral
         });
         return;
