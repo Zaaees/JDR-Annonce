@@ -4,6 +4,9 @@ const {
   StringSelectMenuBuilder,
   ButtonBuilder,
   ButtonStyle,
+  ModalBuilder,
+  TextInputBuilder,
+  TextInputStyle,
   MessageFlags,
   PermissionFlagsBits
 } = require('discord.js');
@@ -78,9 +81,6 @@ function getSlashCommands() {
         )
         .addUserOption(opt =>
           opt.setName('mj').setDescription('Membre qui sera le Maître du Jeu de cette table (par défaut vous-même)').setRequired(false)
-        )
-        .addStringOption(opt =>
-          opt.setName('heure').setDescription('Heure par défaut (ex: 21h00)').setRequired(false)
         )
         .addStringOption(opt =>
           opt
@@ -222,7 +222,7 @@ function buildMJControlPanel(campaign) {
     .setPlaceholder('Définir la date de la session...')
     .addOptions(
       weekDays.map(d => ({
-        label: `${d.fullLabel} (${campaign.time})`,
+        label: campaign.time ? `${d.fullLabel} (${campaign.time})` : d.fullLabel,
         value: d.iso,
         default: campaign.status === 'confirmed' && campaign.confirmedDateISO === d.iso
       }))
@@ -230,15 +230,12 @@ function buildMJControlPanel(campaign) {
 
   rows.push(new ActionRowBuilder().addComponents(quickDaySelect));
 
-  const btnRow = new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId(`mj_restart_poll:${campaign.id}`)
-      .setLabel('Relancer le sondage')
-      .setStyle(ButtonStyle.Secondary)
-  );
-
   if (campaign.status === 'confirmed') {
-    btnRow.addComponents(
+    const sessionRow = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`mj_set_time:${campaign.id}`)
+        .setLabel(campaign.time ? `Modifier l’heure (${campaign.time})` : '🕒 Définir l’heure')
+        .setStyle(ButtonStyle.Primary),
       new ButtonBuilder()
         .setCustomId(`mj_session_done:${campaign.id}`)
         .setLabel('Session terminée')
@@ -248,16 +245,21 @@ function buildMJControlPanel(campaign) {
         .setLabel('Retirer la date')
         .setStyle(ButtonStyle.Danger)
     );
+    rows.push(sessionRow);
   }
 
-  btnRow.addComponents(
+  const tableRow = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`mj_restart_poll:${campaign.id}`)
+      .setLabel('Relancer le sondage')
+      .setStyle(ButtonStyle.Secondary),
     new ButtonBuilder()
       .setCustomId(`mj_delete:${campaign.id}`)
       .setLabel('Supprimer la table')
       .setStyle(ButtonStyle.Danger)
   );
 
-  rows.push(btnRow);
+  rows.push(tableRow);
 
   return {
     content: `**${campaign.title}** — Gestion MJ`,
@@ -290,14 +292,15 @@ async function processVoteSubmission(client, interaction, guildId, campaign, sel
 
   if (result.event === 'AUTO_CONFIRMED') {
     const dateStr = formatFullDateFR(result.campaign.confirmedDateISO);
+    const timeInfo = result.campaign.time ? ` à ${result.campaign.time}` : '';
     await sendRolePing(
       client,
       guildId,
       result.campaign,
-      `Session validée pour **${result.campaign.title}** : **${dateStr} à ${result.campaign.time}**.`
+      `Session validée pour **${result.campaign.title}** : **${dateStr}${timeInfo}**.`
     );
     await interaction.editReply({
-      content: `Session validée : **${dateStr} à ${result.campaign.time}**.`,
+      content: `Session validée : **${dateStr}${timeInfo}**.`,
       components: []
     });
   } else if (result.event === 'SHIFTED_NEXT_WEEK') {
@@ -353,7 +356,6 @@ async function handleInteraction(client, interaction) {
         const title = interaction.options.getString('nom', true);
         const role = interaction.options.getRole('role', true);
         const mjUser = interaction.options.getUser('mj');
-        const time = interaction.options.getString('heure') || '21h00';
         const theme = interaction.options.getString('theme') || 'fantasy';
         const bannerAttachment = interaction.options.getAttachment('banniere');
 
@@ -374,7 +376,7 @@ async function handleInteraction(client, interaction) {
           roleName: `@${role.name}`,
           roleColor: role.hexColor !== '#000000' ? role.hexColor : '#f59e0b',
           theme,
-          time,
+          time: null,
           bannerUrl: bannerAttachment ? bannerAttachment.url : null
         });
 
@@ -819,16 +821,72 @@ async function handleInteraction(client, interaction) {
       await refreshDashboardMessage(client, guildId);
 
       const dateStr = formatFullDateFR(updated.confirmedDateISO);
+      const timeInfo = updated.time ? ` à ${updated.time}` : '';
       await sendRolePing(
         client,
         guildId,
         updated,
-        `Session fixée pour **${updated.title}** : **${dateStr} à ${updated.time}**.`
+        `Session fixée pour **${updated.title}** : **${dateStr}${timeInfo}**.`
       );
 
       await interaction.editReply({
-        content: `Date fixée au **${dateStr} à ${updated.time}**.`,
+        content: `Date fixée au **${dateStr}${timeInfo}**.`,
         components: []
+      });
+      return;
+    }
+
+    // =========================================================================
+    // 5b. DÉFINITION DE L'HEURE PAR LE MJ (OUVERTURE MODAL & VALIDATION)
+    // =========================================================================
+    if (interaction.isButton() && interaction.customId.startsWith('mj_set_time:')) {
+      const campaignId = interaction.customId.split(':')[1];
+      const guildId = interaction.guildId;
+      const { guild: guildData } = getGuildState(guildId);
+      const campaign = guildData.campaigns.find(c => c.id === campaignId);
+
+      if (!campaign || !isUserMJ(interaction, campaign)) {
+        await interaction.reply({ content: 'Action réservée au MJ.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+
+      const modal = new ModalBuilder()
+        .setCustomId(`set_time_modal:${campaignId}`)
+        .setTitle(`Heure - ${campaign.title.slice(0, 35)}`);
+
+      const timeInput = new TextInputBuilder()
+        .setCustomId('session_time_input')
+        .setLabel('Heure de début (informatif)')
+        .setPlaceholder('ex: 20h30, 21h00, 14h00, après manger...')
+        .setStyle(TextInputStyle.Short)
+        .setValue(campaign.time || '')
+        .setRequired(true)
+        .setMaxLength(40);
+
+      modal.addComponents(new ActionRowBuilder().addComponents(timeInput));
+      await interaction.showModal(modal);
+      return;
+    }
+
+    if (interaction.isModalSubmit() && interaction.customId.startsWith('set_time_modal:')) {
+      const campaignId = interaction.customId.split(':')[1];
+      const guildId = interaction.guildId;
+      const { guild: guildData } = getGuildState(guildId);
+      const campaign = guildData.campaigns.find(c => c.id === campaignId);
+
+      if (!campaign || !isUserMJ(interaction, campaign)) {
+        await interaction.reply({ content: 'Action réservée au MJ.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+
+      const rawTime = interaction.fields.getTextInputValue('session_time_input').trim();
+      updateCampaignConfig(guildId, campaignId, { time: rawTime });
+      await refreshDashboardMessage(client, guildId);
+
+      const dateStr = campaign.confirmedDateISO ? formatFullDateFR(campaign.confirmedDateISO) : 'la session';
+      await interaction.reply({
+        content: `Heure fixée à **${rawTime}** pour ${dateStr} (**${campaign.title}**).\nL'affiche a été mise à jour !`,
+        flags: MessageFlags.Ephemeral
       });
       return;
     }

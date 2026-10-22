@@ -17,8 +17,7 @@ const {
   sendRolePing
 } = require('./bot/dashboardManager');
 const {
-  loadState,
-  checkAndRollOverFinishedSessions
+  loadState
 } = require('./storage/store');
 const {
   getWeekDaysFromMonday
@@ -74,34 +73,13 @@ async function registerCommands(appId) {
   }
 }
 
-async function runSessionRolloverCheck() {
-  const rolledOver = checkAndRollOverFinishedSessions();
-  if (rolledOver.length === 0) return;
-
-  const affectedGuilds = new Set();
-  for (const { guildId, campaign } of rolledOver) {
-    affectedGuilds.add(guildId);
-    const weekDays = getWeekDaysFromMonday(campaign.weekMondayISO);
-    await sendRolePing(
-      client,
-      guildId,
-      campaign,
-      `Nouveau sondage de disponibilité pour **${campaign.title}** (semaine du ${weekDays[0].fullLabel}).`
-    );
-  }
-
-  for (const guildId of affectedGuilds) {
-    await refreshDashboardMessage(client, guildId);
-  }
-}
-
 client.once(Events.ClientReady, async readyClient => {
   console.log(`Connecté en tant que ${readyClient.user.tag}`);
   await registerCommands(readyClient.user.id).catch(err =>
     console.error('Erreur enregistrement commandes:', err)
   );
 
-  // Si Render a redémarré et réinitialisé le disque local, restaure automatiquement l'état depuis l'image sur Discord
+  // Si Render a redémarré et réinitialisé le disque local, restaure automatiquement l'état depuis Discord
   await autoRecoverGuildsFromDiscord(client);
 
   // Rafraîchit les dashboards existants
@@ -109,10 +87,6 @@ client.once(Events.ClientReady, async readyClient => {
   for (const guildId of Object.keys(state.guilds)) {
     await refreshDashboardMessage(client, guildId).catch(() => null);
   }
-
-  // Vérifie toutes les minutes si une session est passée pour relancer automatiquement le sondage
-  await runSessionRolloverCheck();
-  setInterval(runSessionRolloverCheck, 60 * 1000);
 });
 
 client.on(Events.InteractionCreate, async interaction => {

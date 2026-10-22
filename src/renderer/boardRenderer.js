@@ -440,7 +440,8 @@ function drawCampaignCard(ctx, c, index, x, y, w, h = CARD_H, withShadow = true)
 
       ctx.fillStyle = '#ffffff';
       ctx.font = '900 40px sans-serif';
-      ctx.fillText(`${fullDateStr}  —  ${c.time}`, x + 48, drawerY + 112);
+      const sessionLabel = c.time ? `${fullDateStr}  —  ${c.time}` : fullDateStr;
+      ctx.fillText(sessionLabel, x + 48, drawerY + 112);
 
       let tokenX = x + w - 64;
       players.slice().reverse().forEach(p => {

@@ -86,12 +86,14 @@ function formatDayMonthFR(isoStr) {
 
 /**
  * Normalise une heure saisie ("21h", "21:00", "20h30") en { label: "21h00", hours: 21, minutes: 0 }
+ * Conserve le texte informatif si le format est libre (ex: "vers 20h45").
  */
-function parseTimeInput(raw = '21h00') {
+function parseTimeInput(raw) {
+  if (!raw) return { label: null, hours: 21, minutes: 0 };
   const cleaned = String(raw).trim().toLowerCase().replace(':', 'h');
   const match = cleaned.match(/^(\d{1,2})(?:h(\d{0,2}))?$/);
   if (!match) {
-    return { label: '21h00', hours: 21, minutes: 0 };
+    return { label: String(raw).trim(), hours: 21, minutes: 0 };
   }
   const hours = Math.min(23, Math.max(0, parseInt(match[1], 10)));
   const minutes = match[2] ? Math.min(59, Math.max(0, parseInt(match[2], 10))) : 0;

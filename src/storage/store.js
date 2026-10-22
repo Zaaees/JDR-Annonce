@@ -106,11 +106,11 @@ function createCampaign(guildId, {
   roleName,
   roleColor = '#f59e0b',
   theme = 'fantasy',
-  time = '21h00',
+  time = null,
   bannerUrl = null
 }) {
   const { state, guild } = getGuildState(guildId);
-  const normTime = parseTimeInput(time).label;
+  const normTime = time ? parseTimeInput(time).label : null;
   // Si on crée une table en fin de semaine ou en cours de semaine, on prend le lundi de la semaine prochaine si aujourd'hui est dimanche, sinon lundi courant
   const now = new Date();
   const weekOffset = now.getDay() === 0 ? 1 : 0;
@@ -155,7 +155,7 @@ function updateCampaignConfig(guildId, campaignId, updates) {
   const c = guild.campaigns.find(x => x.id === campaignId);
   if (!c) return null;
   if (updates.title) c.title = String(updates.title).trim().toUpperCase();
-  if (updates.time) c.time = parseTimeInput(updates.time).label;
+  if (updates.time !== undefined) c.time = updates.time ? parseTimeInput(updates.time).label : null;
   if (updates.theme) c.theme = updates.theme;
   if (updates.bannerUrl !== undefined) c.bannerUrl = updates.bannerUrl;
   if (updates.mjId) c.mjId = updates.mjId;
@@ -297,6 +297,7 @@ function clearSessionDate(guildId, campaignId) {
 
   c.status = 'poll';
   c.confirmedDateISO = null;
+  c.time = null;
   c.failedWeeksCount = 0;
   c.unavailableUntilISO = null;
   saveState(state);
@@ -324,6 +325,7 @@ function restartCampaignPoll(guildId, campaignId, { nextWeek = false } = {}) {
 
   c.status = 'poll';
   c.confirmedDateISO = null;
+  c.time = null;
   c.failedWeeksCount = 0;
   c.unavailableUntilISO = null;
   c.votes = {};
@@ -332,36 +334,10 @@ function restartCampaignPoll(guildId, campaignId, { nextWeek = false } = {}) {
 }
 
 /**
- * Vérifie dans toutes les guildes si une session confirmée est terminée (date + heure passées)
- * et relance automatiquement son sondage pour la semaine suivante.
+ * Le passage automatique est désactivé : c'est le MJ qui clôture la session quand il le souhaite.
  */
 function checkAndRollOverFinishedSessions() {
-  const state = loadState();
-  const nowMs = Date.now();
-  const rolledOver = []; // [{ guildId, campaign }]
-
-  for (const [guildId, guild] of Object.entries(state.guilds)) {
-    for (const c of guild.campaigns) {
-      if (c.status === 'confirmed' && c.confirmedDateISO) {
-        const endMs = getSessionEndTimestamp(c.confirmedDateISO, c.time);
-        if (nowMs >= endMs) {
-          const baseMonday = getMondayISO(new Date(c.confirmedDateISO), 0);
-          c.weekMondayISO = addWeeksISO(baseMonday, 1);
-          c.status = 'poll';
-          c.confirmedDateISO = null;
-          c.failedWeeksCount = 0;
-          c.unavailableUntilISO = null;
-          c.votes = {};
-          rolledOver.push({ guildId, campaign: c });
-        }
-      }
-    }
-  }
-
-  if (rolledOver.length > 0) {
-    saveState(state);
-  }
-  return rolledOver;
+  return [];
 }
 
 module.exports = {
