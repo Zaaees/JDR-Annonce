@@ -23,6 +23,8 @@ const {
   setCampaignStatus
 } = require('../storage/store');
 const {
+  getRollingDays,
+  getTodayISO,
   getWeekDaysFromMonday,
   formatFullDateFR,
   formatDayMonthFR
@@ -153,13 +155,14 @@ function isUserInRole(interaction, campaign) {
 
 /**
  * Panneau de vote JOUEUR avec boutons de jours cliquables (Vert = sélectionné, Gris = non sélectionné)
- * sans fermeture automatique, + bouton "Semaine prochaine" et bouton "Valider".
+ * sans fermeture automatique, + bouton "Indisponible" avec confirmation et bouton "Valider".
  */
 function buildPlayerVotePanel(campaign, userId) {
-  const weekDays = getWeekDaysFromMonday(campaign.weekMondayISO);
+  const startDateISO = campaign.startDateISO || campaign.weekMondayISO || getTodayISO();
+  const weekDays = getRollingDays(startDateISO, 8);
   const selectedSet = getOrInitDraft(campaign, userId);
 
-  // Ligne 1 : Lundi, Mardi, Mercredi, Jeudi (indices 0 à 3)
+  // Ligne 1 : J0 à J3 (indices 0 à 3)
   const rowDays1 = new ActionRowBuilder().addComponents(
     weekDays.slice(0, 4).map((d, idx) => {
       const isSelected = selectedSet.has(idx);
@@ -170,9 +173,9 @@ function buildPlayerVotePanel(campaign, userId) {
     })
   );
 
-  // Ligne 2 : Vendredi, Samedi, Dimanche (indices 4 à 6)
+  // Ligne 2 : J4 à J7 (indices 4 à 7)
   const rowDays2 = new ActionRowBuilder().addComponents(
-    weekDays.slice(4, 7).map((d, offset) => {
+    weekDays.slice(4, 8).map((d, offset) => {
       const idx = 4 + offset;
       const isSelected = selectedSet.has(idx);
       return new ButtonBuilder()
@@ -182,15 +185,16 @@ function buildPlayerVotePanel(campaign, userId) {
     })
   );
 
-  // Ligne 3 : Options globales "Toute la semaine" et "Semaine prochaine"
+  // Ligne 3 : Options globales "Tous les jours" et "Indisponible"
+  const isAllSelected = selectedSet.size === 8;
   const rowActions = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setCustomId(`toggle_all:${campaign.id}`)
-      .setLabel(selectedSet.size === 7 ? 'Tout décocher' : 'Toute la semaine')
+      .setLabel(isAllSelected ? 'Tout décocher' : 'Tous les jours')
       .setStyle(ButtonStyle.Primary),
     new ButtonBuilder()
-      .setCustomId(`vote_next_week:${campaign.id}`)
-      .setLabel('Semaine prochaine')
+      .setCustomId(`vote_unavailable_ask:${campaign.id}`)
+      .setLabel('Indisponible')
       .setStyle(ButtonStyle.Danger)
   );
 
@@ -215,7 +219,8 @@ function buildPlayerVotePanel(campaign, userId) {
  * Panneau strictement réservé au MJ de la table (ou Administrateur).
  */
 function buildMJControlPanel(campaign) {
-  const weekDays = getWeekDaysFromMonday(campaign.weekMondayISO);
+  const startDateISO = campaign.startDateISO || campaign.weekMondayISO || getTodayISO();
+  const weekDays = getRollingDays(startDateISO, 8);
   const rows = [];
 
   const quickDaySelect = new StringSelectMenuBuilder()
@@ -371,17 +376,18 @@ async function processVoteSubmission(client, interaction, guildId, campaign, sel
       components: []
     });
   } else if (result.event === 'SHIFTED_NEXT_WEEK') {
-    const nextWeekDays = getWeekDaysFromMonday(result.campaign.weekMondayISO);
+    const startDateISO = result.campaign.startDateISO || result.campaign.weekMondayISO || getTodayISO();
+    const nextDays = getRollingDays(startDateISO, 8);
     await sendRolePing(
       client,
       guildId,
       result.campaign,
-      `Nouveau sondage de disponibilité pour **${result.campaign.title}** (semaine du ${nextWeekDays[0].fullLabel}).`
+      `Nouveau sondage de disponibilité pour **${result.campaign.title}** (du ${nextDays[0].fullLabel} au ${nextDays[7].fullLabel}).`
     );
     const updatedPanel = buildPlayerVotePanel(result.campaign, interaction.user.id);
     await interaction.editReply({
       ...updatedPanel,
-      content: `**${result.campaign.title}** — Semaine du ${nextWeekDays[0].fullLabel}`
+      content: `**${result.campaign.title}** — Du ${nextDays[0].fullLabel} au ${nextDays[7].fullLabel}`
     });
   } else if (result.event === 'UNAVAILABLE_2_WEEKS') {
     await deleteCampaignPing(client, guildId, result.campaign);
@@ -790,10 +796,10 @@ async function handleInteraction(client, interaction) {
       }
 
       const selectedSet = getOrInitDraft(campaign, interaction.user.id);
-      if (selectedSet.size === 7) {
+      if (selectedSet.size === 8) {
         selectedSet.clear();
       } else {
-        [0, 1, 2, 3, 4, 5, 6].forEach(i => selectedSet.add(i));
+        [0, 1, 2, 3, 4, 5, 6, 7].forEach(i => selectedSet.add(i));
       }
 
       const updatedPanel = buildPlayerVotePanel(campaign, interaction.user.id);
@@ -827,7 +833,67 @@ async function handleInteraction(client, interaction) {
       return;
     }
 
-    if (interaction.isButton() && interaction.customId.startsWith('vote_next_week:')) {
+    if (
+      interaction.isButton() &&
+      (interaction.customId.startsWith('vote_unavailable_ask:') ||
+        interaction.customId.startsWith('vote_next_week:'))
+    ) {
+      const parts = interaction.customId.split(':');
+      const campaignId = parts[1];
+      const guildId = interaction.guildId;
+      const { guild: guildData } = getGuildState(guildId);
+      const campaign = guildData.campaigns.find(c => c.id === campaignId);
+
+      if (!campaign || campaign.status !== 'poll') {
+        await interaction.update({ content: 'Ce sondage n’est plus actif.', components: [] });
+        return;
+      }
+
+      if (!isUserInRole(interaction, campaign)) {
+        await interaction.update({
+          content: `Seuls les membres du rôle <@&${campaign.roleId}> ont le droit de voter.`,
+          components: [],
+          allowedMentions: { parse: [] }
+        });
+        return;
+      }
+
+      // Demande de confirmation sécurisée demandée par l'utilisateur
+      const rowConfirm = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`vote_unavailable_confirm:${campaign.id}`)
+          .setLabel('Confirmer l’indisponibilité')
+          .setStyle(ButtonStyle.Danger),
+        new ButtonBuilder()
+          .setCustomId(`vote_unavailable_cancel:${campaign.id}`)
+          .setLabel('Annuler')
+          .setStyle(ButtonStyle.Secondary)
+      );
+
+      await interaction.update({
+        content: `⚠️ **Si vous choisissez cela, cela clôturera le sondage pour cette semaine.**`,
+        components: [rowConfirm]
+      });
+      return;
+    }
+
+    if (interaction.isButton() && interaction.customId.startsWith('vote_unavailable_cancel:')) {
+      const [, campaignId] = interaction.customId.split(':');
+      const guildId = interaction.guildId;
+      const { guild: guildData } = getGuildState(guildId);
+      const campaign = guildData.campaigns.find(c => c.id === campaignId);
+
+      if (!campaign || campaign.status !== 'poll') {
+        await interaction.update({ content: 'Ce sondage n’est plus actif.', components: [] });
+        return;
+      }
+
+      const playerPanel = buildPlayerVotePanel(campaign, interaction.user.id);
+      await interaction.update(playerPanel);
+      return;
+    }
+
+    if (interaction.isButton() && interaction.customId.startsWith('vote_unavailable_confirm:')) {
       const [, campaignId] = interaction.customId.split(':');
       const guildId = interaction.guildId;
       const { guild: guildData } = getGuildState(guildId);
@@ -847,7 +913,7 @@ async function handleInteraction(client, interaction) {
         return;
       }
 
-      await processVoteSubmission(client, interaction, guildId, campaign, ['NEXT_WEEK']);
+      await processVoteSubmission(client, interaction, guildId, campaign, ['UNAVAILABLE']);
       return;
     }
 
@@ -1054,15 +1120,16 @@ async function handleInteraction(client, interaction) {
       if (action === 'mj_resume_poll') {
         const updated = setCampaignStatus(guildId, campaignId, 'poll');
         await refreshDashboardMessage(client, guildId);
-        const weekDays = getWeekDaysFromMonday(updated.weekMondayISO);
+        const startDateISO = updated.startDateISO || updated.weekMondayISO || getTodayISO();
+        const weekDays = getRollingDays(startDateISO, 8);
         await sendRolePing(
           client,
           guildId,
           updated,
-          `Sondage de disponibilité ouvert pour **${updated.title}** (semaine du ${weekDays[0].fullLabel}).`
+          `Sondage de disponibilité ouvert pour **${updated.title}** (du ${weekDays[0].fullLabel} au ${weekDays[7].fullLabel}).`
         );
         await interaction.editReply({
-          content: `Sondage lancé pour **${updated.title}** (semaine du ${weekDays[0].fullLabel}).`,
+          content: `Sondage lancé pour **${updated.title}** (du ${weekDays[0].fullLabel} au ${weekDays[7].fullLabel}).`,
           components: []
         });
         return;
@@ -1071,15 +1138,16 @@ async function handleInteraction(client, interaction) {
       if (action === 'mj_restart_poll') {
         const updated = restartCampaignPoll(guildId, campaignId, { nextWeek: false });
         await refreshDashboardMessage(client, guildId);
-        const weekDays = getWeekDaysFromMonday(updated.weekMondayISO);
+        const startDateISO = updated.startDateISO || updated.weekMondayISO || getTodayISO();
+        const weekDays = getRollingDays(startDateISO, 8);
         await sendRolePing(
           client,
           guildId,
           updated,
-          `Nouveau sondage de disponibilité pour **${updated.title}** (semaine du ${weekDays[0].fullLabel}).`
+          `Nouveau sondage de disponibilité pour **${updated.title}** (du ${weekDays[0].fullLabel} au ${weekDays[7].fullLabel}).`
         );
         await interaction.editReply({
-          content: `Sondage relancé pour **${updated.title}**.`,
+          content: `Sondage relancé pour **${updated.title}** (du ${weekDays[0].fullLabel} au ${weekDays[7].fullLabel}).`,
           components: []
         });
         return;
@@ -1088,15 +1156,16 @@ async function handleInteraction(client, interaction) {
       if (action === 'mj_session_done') {
         const updated = restartCampaignPoll(guildId, campaignId, { nextWeek: true });
         await refreshDashboardMessage(client, guildId);
-        const weekDays = getWeekDaysFromMonday(updated.weekMondayISO);
+        const startDateISO = updated.startDateISO || updated.weekMondayISO || getTodayISO();
+        const weekDays = getRollingDays(startDateISO, 8);
         await sendRolePing(
           client,
           guildId,
           updated,
-          `Nouveau sondage de disponibilité pour **${updated.title}** (semaine du ${weekDays[0].fullLabel}).`
+          `Nouveau sondage de disponibilité pour **${updated.title}** (du ${weekDays[0].fullLabel} au ${weekDays[7].fullLabel}).`
         );
         await interaction.editReply({
-          content: `Nouveau sondage lancé pour la semaine du **${weekDays[0].fullLabel}**.`,
+          content: `Nouveau sondage lancé pour la période du **${weekDays[0].fullLabel}** au **${weekDays[7].fullLabel}**.`,
           components: []
         });
         return;

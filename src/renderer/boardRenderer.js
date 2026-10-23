@@ -1,5 +1,7 @@
 const { createCanvas, loadImage } = require('@napi-rs/canvas');
 const {
+  getRollingDays,
+  getTodayISO,
   getWeekDaysFromMonday,
   formatFullDateFR,
   formatDayMonthFR
@@ -346,7 +348,8 @@ function drawCampaignCard(ctx, c, index, x, y, w, h = CARD_H, withShadow = true)
     const bannerH = BANNER_H;
     const drawerH = h - bannerH;
     const accentColor = c.roleColor || '#f59e0b';
-    const weekDays = getWeekDaysFromMonday(c.weekMondayISO);
+    const startDateISO = c.startDateISO || c.weekMondayISO || getTodayISO();
+    const weekDays = getRollingDays(startDateISO, 8);
     const players = c.players || [];
 
     // Ombre portée externe sous la carte (uniquement en mode image empilée)
@@ -535,12 +538,13 @@ function drawCampaignCard(ctx, c, index, x, y, w, h = CARD_H, withShadow = true)
       ctx.font = '800 32px sans-serif';
       ctx.fillText(`Joueurs non disponibles jusqu'au ${untilStr}.`, x + 48, drawerY + 96);
     } else {
-      // Grille des 7 jours dans le tiroir inférieur
-      const gridX = x + 28;
+      // Grille des 8 jours dans le tiroir inférieur
+      const gridX = x + 24;
       const gridY = drawerY + 16;
-      const gridW = w - 56;
-      const colGap = 8;
-      const colW = (gridW - colGap * 6) / 7;
+      const gridW = w - 48;
+      const colGap = 6;
+      const colCount = 8;
+      const colW = (gridW - colGap * (colCount - 1)) / colCount;
       const colH = drawerH - 30;
 
       weekDays.forEach((d, dayIdx) => {
@@ -556,14 +560,14 @@ function drawCampaignCard(ctx, c, index, x, y, w, h = CARD_H, withShadow = true)
         ctx.stroke();
 
         ctx.fillStyle = isFull ? '#34d399' : '#ffffff';
-        ctx.font = '800 23px sans-serif';
+        ctx.font = '800 21px sans-serif';
         ctx.textAlign = 'center';
         ctx.fillText(`${d.code} ${d.dayNum}`, cx + colW / 2, gridY + 32);
 
         ctx.strokeStyle = 'rgba(255,255,255,0.1)';
         ctx.beginPath();
-        ctx.moveTo(cx + 10, gridY + 44);
-        ctx.lineTo(cx + colW - 10, gridY + 44);
+        ctx.moveTo(cx + 8, gridY + 44);
+        ctx.lineTo(cx + colW - 8, gridY + 44);
         ctx.stroke();
 
         if (availPlayers.length === 0) {
@@ -571,8 +575,8 @@ function drawCampaignCard(ctx, c, index, x, y, w, h = CARD_H, withShadow = true)
           ctx.font = '700 16px sans-serif';
           ctx.fillText('—', cx + colW / 2, gridY + 96);
         } else {
-          const r = 21;
-          const spacing = Math.min(28, (colW - 38) / Math.max(1, availPlayers.length - 1));
+          const r = 20;
+          const spacing = Math.min(26, (colW - 36) / Math.max(1, availPlayers.length - 1));
           const totalRowW = (availPlayers.length - 1) * spacing;
           const startAvX = cx + colW / 2 - totalRowW / 2;
 

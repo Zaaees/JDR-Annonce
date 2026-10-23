@@ -20,12 +20,31 @@ function getMondayISO(baseDate = new Date(), weekOffset = 0) {
 }
 
 /**
- * Retourne le lundi de la semaine suivante par rapport à une date ISO "YYYY-MM-DD"
+ * Retourne la date courante (heure de Paris) au format ISO "YYYY-MM-DD".
+ */
+function getTodayISO() {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Europe/Paris',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  }).format(new Date());
+}
+
+/**
+ * Ajoute un nombre de jours à une date ISO "YYYY-MM-DD"
+ */
+function addDaysISO(dateISO, daysToAdd = 7) {
+  const d = parseISODate(dateISO);
+  d.setDate(d.getDate() + daysToAdd);
+  return formatISODate(d);
+}
+
+/**
+ * Retourne le même jour de la semaine suivante par rapport à une date ISO "YYYY-MM-DD"
  */
 function addWeeksISO(mondayISO, weeksToAdd = 1) {
-  const d = parseISODate(mondayISO);
-  d.setDate(d.getDate() + weeksToAdd * 7);
-  return formatISODate(d);
+  return addDaysISO(mondayISO, weeksToAdd * 7);
 }
 
 function formatISODate(d) {
@@ -41,17 +60,22 @@ function parseISODate(isoStr) {
 }
 
 /**
- * Génère les 7 jours (Lundi -> Dimanche) à partir d'un lundi ISO ("YYYY-MM-DD")
+ * Génère une liste de N jours consécutifs (par défaut 8 jours : J0 à J7) à partir d'une date ISO ("YYYY-MM-DD")
  */
-function getWeekDaysFromMonday(mondayISO) {
-  const baseMonday = parseISODate(mondayISO);
-  return DAYS_SHORT.map((code, idx) => {
-    const d = new Date(baseMonday);
-    d.setDate(baseMonday.getDate() + idx);
+function getRollingDays(startDateISO, dayCount = 8) {
+  const baseDate = parseISODate(startDateISO);
+  const result = [];
+  for (let idx = 0; idx < dayCount; idx++) {
+    const d = new Date(baseDate.getFullYear(), baseDate.getMonth(), baseDate.getDate() + idx);
     const dayNum = String(d.getDate()).padStart(2, '0');
     const monthIdx = d.getMonth();
     const iso = formatISODate(d);
-    return {
+    const jsDay = d.getDay(); // 0 = Dimanche, 1 = Lundi, ...
+    const dayOfWeekIdx = jsDay === 0 ? 6 : jsDay - 1;
+    const code = DAYS_SHORT[dayOfWeekIdx];
+    const fullDayName = DAYS_FULL[dayOfWeekIdx];
+
+    result.push({
       index: idx,
       iso,
       code,
@@ -59,9 +83,18 @@ function getWeekDaysFromMonday(mondayISO) {
       monthFull: MONTHS_FULL[monthIdx],
       monthShort: MONTHS_SHORT[monthIdx],
       shortLabel: `${code} ${dayNum}`,
-      fullLabel: `${DAYS_FULL[idx]} ${dayNum} ${MONTHS_FULL[monthIdx]}`
-    };
-  });
+      fullLabel: `${fullDayName} ${dayNum} ${MONTHS_FULL[monthIdx]}`
+    });
+  }
+  return result;
+}
+
+/**
+ * Génère les 8 jours à partir d'une date de départ ISO ("YYYY-MM-DD")
+ * (Conserve la signature pour rétro-compatibilité)
+ */
+function getWeekDaysFromMonday(mondayISO) {
+  return getRollingDays(mondayISO, 8);
 }
 
 /**
@@ -138,9 +171,12 @@ module.exports = {
   MONTHS_FULL,
   MONTHS_SHORT,
   getMondayISO,
+  getTodayISO,
+  addDaysISO,
   addWeeksISO,
   formatISODate,
   parseISODate,
+  getRollingDays,
   getWeekDaysFromMonday,
   formatFullDateFR,
   formatDayMonthFR,

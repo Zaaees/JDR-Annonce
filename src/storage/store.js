@@ -2,7 +2,10 @@ const fs = require('fs');
 const path = require('path');
 const {
   getMondayISO,
+  getTodayISO,
+  addDaysISO,
   addWeeksISO,
+  getRollingDays,
   getWeekDaysFromMonday,
   parseTimeInput,
   getSessionEndTimestamp
@@ -113,10 +116,7 @@ function createCampaign(guildId, {
 }) {
   const { state, guild } = getGuildState(guildId);
   const normTime = time ? parseTimeInput(time).label : null;
-  // Si on crée une table en fin de semaine ou en cours de semaine, on prend le lundi de la semaine prochaine si aujourd'hui est dimanche, sinon lundi courant
-  const now = new Date();
-  const weekOffset = now.getDay() === 0 ? 1 : 0;
-  const weekMondayISO = getMondayISO(now, weekOffset);
+  const startDateISO = getTodayISO();
 
   const campaign = {
     id: `jdr_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
@@ -131,12 +131,13 @@ function createCampaign(guildId, {
     bannerUrl: bannerUrl || null,
     bannerMessageId: bannerMessageId || null,
     bannerChannelId: bannerChannelId || null,
-    weekMondayISO,
+    startDateISO,
+    weekMondayISO: startDateISO, // Conservé pour rétro-compatibilité
     failedWeeksCount: 0,
     unavailableUntilISO: null,
     status: 'poll', // 'poll' | 'confirmed' | 'unavailable'
     confirmedDateISO: null,
-    votes: {}, // { [userId]: [0, 3, 5] } (indices 0=LUN .. 6=DIM)
+    votes: {}, // { [userId]: [0, 3, 5] } (indices 0..7 pour les 8 jours)
     lastPingMessageId: null
   };
 
@@ -174,27 +175,30 @@ function updateCampaignConfig(guildId, campaignId, updates) {
 }
 
 /**
- * Gère l'échec d'une semaine de sondage (soit un joueur a choisi "Semaine prochaine",
+ * Gère l'échec d'une période de sondage (soit un joueur a choisi "Indisponible",
  * soit tous les joueurs du rôle ont voté mais aucun jour ne réunit 100%).
  */
 function handlePollWeekNoMatch(campaign) {
-  const currentWeekDays = getWeekDaysFromMonday(campaign.weekMondayISO);
-  const sundayISO = currentWeekDays[6].iso;
+  const startDateISO = campaign.startDateISO || campaign.weekMondayISO || getTodayISO();
+  const currentDays = getRollingDays(startDateISO, 8);
+  const lastDayISO = currentDays[7].iso;
   campaign.failedWeeksCount = (campaign.failedWeeksCount || 0) + 1;
 
   if (campaign.failedWeeksCount >= 2) {
-    // 2 semaines consécutives sans disponibilité -> En attente du MJ
+    // 2 périodes consécutives sans disponibilité -> En attente du MJ
     campaign.status = 'unavailable';
     campaign.confirmedDateISO = null;
-    campaign.unavailableUntilISO = sundayISO;
+    campaign.unavailableUntilISO = lastDayISO;
     campaign.votes = {};
     return {
       event: 'UNAVAILABLE_2_WEEKS',
       campaign
     };
   } else {
-    // Passage immédiat à la semaine suivante
-    campaign.weekMondayISO = addWeeksISO(campaign.weekMondayISO, 1);
+    // Passage immédiat aux 7 jours suivants (décalage d'une semaine pour recommencer le même jour)
+    const nextStartISO = addDaysISO(startDateISO, 7);
+    campaign.startDateISO = nextStartISO;
+    campaign.weekMondayISO = nextStartISO;
     campaign.status = 'poll';
     campaign.confirmedDateISO = null;
     campaign.unavailableUntilISO = null;
@@ -211,7 +215,7 @@ function handlePollWeekNoMatch(campaign) {
  * @param {string} guildId
  * @param {string} campaignId
  * @param {string} userId
- * @param {string[]} selectedValues - ex: ['0', '3', '5'] ou ['NEXT_WEEK']
+ * @param {string[]} selectedValues - ex: ['0', '3', '5'] ou ['UNAVAILABLE']
  * @param {string[]} roleMemberIds - Liste des userId des membres du @Rôle devant voter
  */
 function submitPlayerVote(guildId, campaignId, userId, selectedValues, roleMemberIds) {
@@ -221,34 +225,35 @@ function submitPlayerVote(guildId, campaignId, userId, selectedValues, roleMembe
     return { event: 'INVALID_STATE', campaign: c };
   }
 
-  // Cas 1 : Le joueur a sélectionné "Semaine prochaine" (pas dispo de la semaine)
-  if (selectedValues.includes('NEXT_WEEK')) {
+  // Cas 1 : Le joueur a sélectionné "Indisponible" (pas dispo sur la période)
+  if (selectedValues.includes('UNAVAILABLE') || selectedValues.includes('NEXT_WEEK')) {
     const result = handlePollWeekNoMatch(c);
     saveState(state);
     return result;
   }
 
-  // Cas 2 : Le joueur a sélectionné un ou plusieurs jours (0..6)
+  // Cas 2 : Le joueur a sélectionné un ou plusieurs jours (0..7)
   const dayIndices = selectedValues
     .map(v => parseInt(v, 10))
-    .filter(n => !Number.isNaN(n) && n >= 0 && n <= 6);
+    .filter(n => !Number.isNaN(n) && n >= 0 && n <= 7);
 
   c.votes[userId] = dayIndices;
 
   // Liste effective des joueurs attendus (tous les membres du @Rôle)
   const activeVoterIds = roleMemberIds.length > 0 ? roleMemberIds : Object.keys(c.votes);
 
-  // Vérifie s'il existe un premier jour (0=LUN .. 6=DIM) où 100% des joueurs du @Rôle sont disponibles
-  const firstCommonDayIndex = [0, 1, 2, 3, 4, 5, 6].find(dayIdx =>
+  // Vérifie s'il existe un premier jour (indices 0..7) où 100% des joueurs du @Rôle sont disponibles
+  const firstCommonDayIndex = [0, 1, 2, 3, 4, 5, 6, 7].find(dayIdx =>
     activeVoterIds.every(memberId =>
       Array.isArray(c.votes[memberId]) && c.votes[memberId].includes(dayIdx)
     )
   );
 
   if (firstCommonDayIndex !== undefined) {
-    const weekDays = getWeekDaysFromMonday(c.weekMondayISO);
+    const startDateISO = c.startDateISO || c.weekMondayISO || getTodayISO();
+    const days = getRollingDays(startDateISO, 8);
     c.status = 'confirmed';
-    c.confirmedDateISO = weekDays[firstCommonDayIndex].iso;
+    c.confirmedDateISO = days[firstCommonDayIndex].iso;
     c.failedWeeksCount = 0;
     c.unavailableUntilISO = null;
     saveState(state);
@@ -312,7 +317,7 @@ function clearSessionDate(guildId, campaignId) {
 
 /**
  * Relance un sondage (par le MJ ou après une session terminée)
- * @param {boolean} nextWeek - si true, lance le sondage sur la semaine suivant la session/semaine actuelle
+ * @param {boolean} nextWeek - si true, lance le sondage sur la période suivant la session terminée
  */
 function restartCampaignPoll(guildId, campaignId, { nextWeek = false } = {}) {
   const { state, guild } = getGuildState(guildId);
@@ -320,13 +325,15 @@ function restartCampaignPoll(guildId, campaignId, { nextWeek = false } = {}) {
   if (!c) return null;
 
   if (nextWeek) {
-    const refDate = c.confirmedDateISO ? new Date(c.confirmedDateISO) : new Date();
-    const baseMonday = getMondayISO(refDate, 0);
-    c.weekMondayISO = addWeeksISO(baseMonday, 1);
+    const todayISO = getTodayISO();
+    const refDateISO = c.confirmedDateISO || c.startDateISO || c.weekMondayISO || todayISO;
+    const start = refDateISO >= todayISO ? addDaysISO(refDateISO, 1) : todayISO;
+    c.startDateISO = start;
+    c.weekMondayISO = start;
   } else {
-    const now = new Date();
-    const offset = now.getDay() === 0 ? 1 : 0;
-    c.weekMondayISO = getMondayISO(now, offset);
+    const start = getTodayISO();
+    c.startDateISO = start;
+    c.weekMondayISO = start;
   }
 
   c.status = 'poll';
@@ -355,9 +362,9 @@ function setCampaignStatus(guildId, campaignId, newStatus) {
     c.failedWeeksCount = 0;
     c.unavailableUntilISO = null;
   } else if (newStatus === 'poll') {
-    const now = new Date();
-    const offset = now.getDay() === 0 ? 1 : 0;
-    c.weekMondayISO = getMondayISO(now, offset);
+    const start = getTodayISO();
+    c.startDateISO = start;
+    c.weekMondayISO = start;
     c.confirmedDateISO = null;
     c.time = null;
     c.votes = {};
