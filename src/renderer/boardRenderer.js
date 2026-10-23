@@ -441,13 +441,7 @@ function drawCampaignCard(ctx, c, index, x, y, w, h = CARD_H, withShadow = true)
       ctx.fillStyle = '#ffffff';
       ctx.font = '900 40px sans-serif';
       const sessionLabel = c.time ? `${fullDateStr}  —  ${c.time}` : fullDateStr;
-      ctx.fillText(sessionLabel, x + 48, drawerY + 112);
-
-      let tokenX = x + w - 64;
-      players.slice().reverse().forEach(p => {
-        drawPlayerToken(ctx, p, tokenX, drawerY + 84, 28, '#34d399', 1);
-        tokenX -= 44;
-      });
+      ctx.fillText(sessionLabel, x + 48, drawerY + 112, w - 96);
     } else if (c.status === 'paused') {
       roundRect(ctx, x + 28, drawerY + 18, w - 56, drawerH - 34, 12);
       ctx.fillStyle = 'rgba(245, 158, 11, 0.12)';
