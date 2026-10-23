@@ -4,23 +4,67 @@ const {
   formatFullDateFR,
   formatDayMonthFR
 } = require('../utils/dates');
+const {
+  isDiscordCdnUrl,
+  isDiscordUrlExpired,
+  refreshSingleDiscordUrl
+} = require('../utils/discordMedia');
+const { updateCampaignConfig } = require('../storage/store');
 
 const imageCache = new Map();
 
-async function fetchCachedImage(urlOrPath) {
+async function fetchCachedImage(urlOrPath, onUrlRefreshed = null) {
   if (!urlOrPath) return null;
   if (imageCache.has(urlOrPath)) {
     return imageCache.get(urlOrPath);
   }
+
+  let finalUrl = urlOrPath;
+
+  // Si c'est une URL Discord CDN expirée ou proche de l'expiration, on la rafraîchit en amont
+  if (isDiscordUrlExpired(finalUrl)) {
+    try {
+      const refreshed = await refreshSingleDiscordUrl(finalUrl);
+      if (refreshed && refreshed !== finalUrl) {
+        finalUrl = refreshed;
+        if (typeof onUrlRefreshed === 'function') {
+          onUrlRefreshed(refreshed);
+        }
+      }
+    } catch {
+      // Continue avec finalUrl
+    }
+  }
+
   try {
-    const img = await loadImage(urlOrPath);
+    const img = await loadImage(finalUrl);
     if (imageCache.size > 200) {
       const firstKey = imageCache.keys().next().value;
       imageCache.delete(firstKey);
     }
-    imageCache.set(urlOrPath, img);
+    imageCache.set(finalUrl, img);
+    if (finalUrl !== urlOrPath) {
+      imageCache.set(urlOrPath, img);
+    }
     return img;
   } catch {
+    // Si échec de chargement et que c'est une URL Discord non encore rafraîchie, tentative de rafraîchissement d'urgence
+    if (isDiscordCdnUrl(finalUrl)) {
+      try {
+        const refreshed = await refreshSingleDiscordUrl(finalUrl);
+        if (refreshed && refreshed !== finalUrl) {
+          const img = await loadImage(refreshed);
+          imageCache.set(refreshed, img);
+          imageCache.set(urlOrPath, img);
+          if (typeof onUrlRefreshed === 'function') {
+            onUrlRefreshed(refreshed);
+          }
+          return img;
+        }
+      } catch {
+        // Échec
+      }
+    }
     return null;
   }
 }
@@ -232,7 +276,7 @@ const BANNER_H = 225; // Étage 1 : Bannière pure
 const DRAWER_H = 165; // Étage 2 : Tiroir calendrier sous la bannière
 const CARD_H = BANNER_H + DRAWER_H;
 
-async function renderDashboardBuffer(enrichedCampaigns) {
+async function renderDashboardBuffer(enrichedCampaigns, guildId = null) {
   const width = CARD_W;
   const cardH = CARD_H;
   const gap = 52; // Grand espace transparent entre chaque JDR
@@ -255,7 +299,7 @@ async function renderDashboardBuffer(enrichedCampaigns) {
     return emptyCanvas.toBuffer('image/png');
   }
 
-  await preloadCampaignAssets(enrichedCampaigns);
+  await preloadCampaignAssets(enrichedCampaigns, guildId);
 
   const totalH = pad * 2 + enrichedCampaigns.length * cardH + (enrichedCampaigns.length - 1) * gap;
   const canvas = createCanvas(width, totalH);
@@ -271,11 +315,16 @@ async function renderDashboardBuffer(enrichedCampaigns) {
   return canvas.toBuffer('image/png');
 }
 
-async function preloadCampaignAssets(campaigns) {
+async function preloadCampaignAssets(campaigns, guildId = null) {
   await Promise.all(
     campaigns.map(async c => {
       if (c.bannerUrl) {
-        c.bannerImg = await fetchCachedImage(c.bannerUrl);
+        c.bannerImg = await fetchCachedImage(c.bannerUrl, freshUrl => {
+          c.bannerUrl = freshUrl;
+          if (guildId && c.id) {
+            updateCampaignConfig(guildId, c.id, { bannerUrl: freshUrl });
+          }
+        });
       }
       if (Array.isArray(c.players)) {
         await Promise.all(
@@ -548,8 +597,8 @@ function drawCampaignCard(ctx, c, index, x, y, w, h = CARD_H, withShadow = true)
  * Génère l'image PNG d'une seule table JDR (format bannière large),
  * pour qu'elle soit affichée en grand dans la galerie du message Discord.
  */
-async function renderCampaignCardBuffer(campaign, index = 0) {
-  await preloadCampaignAssets([campaign]);
+async function renderCampaignCardBuffer(campaign, index = 0, guildId = null) {
+  await preloadCampaignAssets([campaign], guildId);
   const canvas = createCanvas(CARD_W, CARD_H);
   const ctx = canvas.getContext('2d');
   ctx.clearRect(0, 0, CARD_W, CARD_H);

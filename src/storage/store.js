@@ -107,7 +107,9 @@ function createCampaign(guildId, {
   roleColor = '#f59e0b',
   theme = 'fantasy',
   time = null,
-  bannerUrl = null
+  bannerUrl = null,
+  bannerMessageId = null,
+  bannerChannelId = null
 }) {
   const { state, guild } = getGuildState(guildId);
   const normTime = time ? parseTimeInput(time).label : null;
@@ -127,6 +129,8 @@ function createCampaign(guildId, {
     theme,
     time: normTime,
     bannerUrl: bannerUrl || null,
+    bannerMessageId: bannerMessageId || null,
+    bannerChannelId: bannerChannelId || null,
     weekMondayISO,
     failedWeeksCount: 0,
     unavailableUntilISO: null,
@@ -158,6 +162,8 @@ function updateCampaignConfig(guildId, campaignId, updates) {
   if (updates.time !== undefined) c.time = updates.time ? parseTimeInput(updates.time).label : null;
   if (updates.theme) c.theme = updates.theme;
   if (updates.bannerUrl !== undefined) c.bannerUrl = updates.bannerUrl;
+  if (updates.bannerMessageId !== undefined) c.bannerMessageId = updates.bannerMessageId;
+  if (updates.bannerChannelId !== undefined) c.bannerChannelId = updates.bannerChannelId;
   if (updates.mjId) c.mjId = updates.mjId;
   if (updates.mjName) c.mjName = updates.mjName;
   if (updates.roleId) c.roleId = updates.roleId;

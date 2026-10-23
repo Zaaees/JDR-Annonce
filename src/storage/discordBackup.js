@@ -20,8 +20,9 @@ async function getBotOwnerUser(client) {
     if (!app || !app.owner) return null;
 
     // Si l'application appartient à une Team
-    if (app.owner.ownerUserId) {
-      return await client.users.fetch(app.owner.ownerUserId).catch(() => null);
+    if (app.owner.ownerId || app.owner.ownerUserId) {
+      const ownerId = app.owner.ownerId || app.owner.ownerUserId;
+      return await client.users.fetch(ownerId).catch(() => null);
     }
     if (app.owner.members && app.owner.members.size > 0) {
       const firstMember = app.owner.members.first();

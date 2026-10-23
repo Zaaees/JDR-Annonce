@@ -254,20 +254,18 @@ function handleCropHttp(req, res, client) {
             const { AttachmentBuilder } = require('discord.js');
             const att = new AttachmentBuilder(buffer, { name: `banner_.png` });
             let sentMsg = null;
+            const dmContent = `[Bannière de votre JDR archivée en DM pour conservation permanente]\nTable ID : ${session.campaignId}`;
             if (session.userId) {
               const user = await client.users.fetch(session.userId).catch(() => null);
               if (user) {
-                sentMsg = await user.send({ content: '[Bannière de votre JDR archivée en DM pour conservation permanente]', files: [att] }).catch(() => null);
+                sentMsg = await user.send({ content: dmContent, files: [att] }).catch(() => null);
               }
             }
             if (!sentMsg) {
-              const app = await client.application.fetch().catch(() => null);
-              const owner = app ? (app.owner?.user || app.owner) : null;
-              if (owner && owner.id) {
-                const ownerUser = await client.users.fetch(owner.id).catch(() => null);
-                if (ownerUser) {
-                  sentMsg = await ownerUser.send({ content: '[Bannière JDR archivée]', files: [att] }).catch(() => null);
-                }
+              const { getBotOwnerUser } = require('../storage/discordBackup');
+              const ownerUser = await getBotOwnerUser(client);
+              if (ownerUser) {
+                sentMsg = await ownerUser.send({ content: dmContent, files: [att] }).catch(() => null);
               }
             }
             if (sentMsg && sentMsg.attachments.first()) {
@@ -275,7 +273,11 @@ function handleCropHttp(req, res, client) {
             }
           } catch (e) { console.error('Erreur hébergement DM Discord:', e); }
         }
-        updateCampaignConfig(session.guildId, session.campaignId, { bannerUrl });
+        updateCampaignConfig(session.guildId, session.campaignId, {
+          bannerUrl,
+          bannerMessageId: sentMsg ? sentMsg.id : null,
+          bannerChannelId: sentMsg ? sentMsg.channelId : null
+        });
         cropSessions.delete(token);
 
         if (client) {

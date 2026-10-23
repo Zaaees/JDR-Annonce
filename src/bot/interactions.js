@@ -433,6 +433,40 @@ async function handleInteraction(client, interaction) {
           setGuildChannel(guildId, interaction.channelId, null);
         }
 
+        let bannerUrl = bannerAttachment ? bannerAttachment.url : null;
+        let bannerMessageId = null;
+        let bannerChannelId = null;
+
+        if (bannerAttachment && client) {
+          try {
+            const res = await fetch(bannerAttachment.url);
+            if (res.ok) {
+              const arrayBuf = await res.arrayBuffer();
+              const buffer = Buffer.from(arrayBuf);
+              const { AttachmentBuilder } = require('discord.js');
+              const att = new AttachmentBuilder(buffer, { name: 'banner_.png' });
+              const dmContent = `[Bannière de votre JDR archivée en DM pour conservation permanente]\nTable : **${title}**`;
+              let sentMsg = await interaction.user.send({ content: dmContent, files: [att] }).catch(() => null);
+
+              if (!sentMsg) {
+                const { getBotOwnerUser } = require('../storage/discordBackup');
+                const ownerUser = await getBotOwnerUser(client);
+                if (ownerUser) {
+                  sentMsg = await ownerUser.send({ content: dmContent, files: [att] }).catch(() => null);
+                }
+              }
+
+              if (sentMsg && sentMsg.attachments.first()) {
+                bannerUrl = sentMsg.attachments.first().url;
+                bannerMessageId = sentMsg.id;
+                bannerChannelId = sentMsg.channelId;
+              }
+            }
+          } catch (err) {
+            console.error('[Creer] Erreur archivage bannière en DM:', err?.message);
+          }
+        }
+
         const campaign = createCampaign(guildId, {
           title,
           mjId: mjUser ? mjUser.id : interaction.user.id,
@@ -444,7 +478,9 @@ async function handleInteraction(client, interaction) {
           roleColor: role.hexColor !== '#000000' ? role.hexColor : '#f59e0b',
           theme,
           time: null,
-          bannerUrl: bannerAttachment ? bannerAttachment.url : null
+          bannerUrl,
+          bannerMessageId,
+          bannerChannelId
         });
 
         // Mise à jour de l'affiche uniquement, sans poster de message supplémentaire dans le salon

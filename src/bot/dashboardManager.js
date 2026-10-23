@@ -18,7 +18,9 @@ const {
 } = require('../storage/store');
 const { renderDashboardBuffer, renderCampaignCardBuffer } = require('../renderer/boardRenderer');
 const { embedStateInPng, extractStateFromPng } = require('../utils/pngState');
-const { saveBackupToDiscord, restoreBackupFromDiscord } = require('../storage/discordBackup');
+const { saveBackupToDiscord, restoreBackupFromDiscord, getBotOwnerUser } = require('../storage/discordBackup');
+const { findBannerInDMs } = require('../utils/discordMedia');
+const { updateCampaignConfig } = require('../storage/store');
 
 /**
  * Récupère tous les membres humains possédant le @Rôle Discord d'une campagne.
@@ -161,7 +163,7 @@ async function refreshDashboardMessage(client, guildId) {
   } else {
     for (let i = 0; i < enrichedCampaigns.length; i++) {
       const c = enrichedCampaigns[i];
-      const rawCardBuffer = await renderCampaignCardBuffer(c, i);
+      const rawCardBuffer = await renderCampaignCardBuffer(c, i, guildId);
       // Intègre l'état complet du serveur dans les métadonnées PNG de la première image (pour Render Free)
       const cardBuffer = (i === 0) ? embedStateInPng(rawCardBuffer, guildData) : rawCardBuffer;
       const fileName = i === 0 ? 'sessions-jdr.png' : `sessions-jdr-${i}.png`;
@@ -248,7 +250,7 @@ async function refreshDashboardMessage(client, guildId) {
     } catch (sendErr) {
       console.error('[Dashboard] Erreur envoi Components V2, tentative repli legacy :', sendErr?.message);
       // Fallback au mode legacy si Discord rejette Components V2 sur ce salon
-      const legacyRawBuffer = await renderDashboardBuffer(enrichedCampaigns);
+      const legacyRawBuffer = await renderDashboardBuffer(enrichedCampaigns, guildId);
       const legacyBuffer = embedStateInPng(legacyRawBuffer, guildData);
       const legacyAttachment = new AttachmentBuilder(legacyBuffer, { name: 'sessions-jdr.png' });
       const legacyComponents = buildDashboardComponents(enrichedCampaigns);
@@ -362,6 +364,25 @@ async function autoRecoverGuildsFromDiscord(client) {
       }
     } catch {
       // Ignore les salons non accessibles
+    }
+
+    // Récupération des bannières manquantes depuis les DMs envoyés par le bot
+    const { guild: currentGuildData } = getGuildState(guildId);
+    if (currentGuildData && Array.isArray(currentGuildData.campaigns)) {
+      for (const c of currentGuildData.campaigns) {
+        if (!c.bannerUrl) {
+          const ownerUser = await getBotOwnerUser(client);
+          const recovered = await findBannerInDMs(client, ownerUser, c);
+          if (recovered && recovered.url) {
+            console.log(`[AutoRecover] Bannière retrouvée en DM pour "${c.title}" !`);
+            updateCampaignConfig(guildId, c.id, {
+              bannerUrl: recovered.url,
+              bannerMessageId: recovered.messageId,
+              bannerChannelId: recovered.channelId
+            });
+          }
+        }
+      }
     }
   }
 }
