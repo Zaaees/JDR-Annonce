@@ -60,9 +60,9 @@ function parseISODate(isoStr) {
 }
 
 /**
- * Génère une liste de N jours consécutifs (par défaut 8 jours : J0 à J7) à partir d'une date ISO ("YYYY-MM-DD")
+ * Génère une liste de N jours consécutifs (par défaut 14 jours : 2 semaines du Lundi au Dimanche) à partir d'une date ISO ("YYYY-MM-DD")
  */
-function getRollingDays(startDateISO, dayCount = 8) {
+function getRollingDays(startDateISO, dayCount = 14) {
   const baseDate = parseISODate(startDateISO);
   const result = [];
   for (let idx = 0; idx < dayCount; idx++) {
@@ -90,11 +90,11 @@ function getRollingDays(startDateISO, dayCount = 8) {
 }
 
 /**
- * Génère les 8 jours à partir d'une date de départ ISO ("YYYY-MM-DD")
+ * Génère les 14 jours à partir d'un lundi de départ ISO ("YYYY-MM-DD")
  * (Conserve la signature pour rétro-compatibilité)
  */
 function getWeekDaysFromMonday(mondayISO) {
-  return getRollingDays(mondayISO, 8);
+  return getRollingDays(mondayISO, 14);
 }
 
 /**

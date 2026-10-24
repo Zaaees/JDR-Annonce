@@ -2,6 +2,7 @@ const { createCanvas, loadImage } = require('@napi-rs/canvas');
 const {
   getRollingDays,
   getTodayISO,
+  getMondayISO,
   getWeekDaysFromMonday,
   formatFullDateFR,
   formatDayMonthFR
@@ -275,7 +276,7 @@ function drawPlayerToken(ctx, player, cx, cy, radius, borderColor, alpha = 1) {
  */
 const CARD_W = 1000;
 const BANNER_H = 225; // Étage 1 : Bannière pure
-const DRAWER_H = 165; // Étage 2 : Tiroir calendrier sous la bannière
+const DRAWER_H = 260; // Étage 2 : Tiroir calendrier sous la bannière (2 rangées de 7 jours)
 const CARD_H = BANNER_H + DRAWER_H;
 
 async function renderDashboardBuffer(enrichedCampaigns, guildId = null) {
@@ -348,8 +349,8 @@ function drawCampaignCard(ctx, c, index, x, y, w, h = CARD_H, withShadow = true)
     const bannerH = BANNER_H;
     const drawerH = h - bannerH;
     const accentColor = c.roleColor || '#f59e0b';
-    const startDateISO = c.startDateISO || c.weekMondayISO || getTodayISO();
-    const weekDays = getRollingDays(startDateISO, 8);
+    const startDateISO = c.startDateISO || c.weekMondayISO || getMondayISO();
+    const weekDays = getRollingDays(startDateISO, 14);
     const players = c.players || [];
 
     // Ombre portée externe sous la carte (uniquement en mode image empilée)
@@ -479,7 +480,7 @@ function drawCampaignCard(ctx, c, index, x, y, w, h = CARD_H, withShadow = true)
     if (c.status === 'confirmed' && c.confirmedDateISO) {
       const fullDateStr = formatFullDateFR(c.confirmedDateISO).toUpperCase();
 
-      roundRect(ctx, x + 28, drawerY + 18, w - 56, drawerH - 34, 12);
+      roundRect(ctx, x + 28, drawerY + 24, w - 56, drawerH - 48, 12);
       ctx.fillStyle = 'rgba(16, 185, 129, 0.14)';
       ctx.fill();
       ctx.strokeStyle = '#34d399';
@@ -487,15 +488,15 @@ function drawCampaignCard(ctx, c, index, x, y, w, h = CARD_H, withShadow = true)
       ctx.stroke();
 
       ctx.fillStyle = '#34d399';
-      ctx.font = '800 20px sans-serif';
-      ctx.fillText('PROCHAINE SESSION', x + 48, drawerY + 56);
+      ctx.font = '800 22px sans-serif';
+      ctx.fillText('PROCHAINE SESSION', x + 52, drawerY + 80);
 
       ctx.fillStyle = '#ffffff';
-      ctx.font = '900 40px sans-serif';
+      ctx.font = '900 42px sans-serif';
       const sessionLabel = c.time ? `${fullDateStr}  —  ${c.time}` : fullDateStr;
-      ctx.fillText(sessionLabel, x + 48, drawerY + 112, w - 96);
+      ctx.fillText(sessionLabel, x + 52, drawerY + 145, w - 104);
     } else if (c.status === 'paused') {
-      roundRect(ctx, x + 28, drawerY + 18, w - 56, drawerH - 34, 12);
+      roundRect(ctx, x + 28, drawerY + 24, w - 56, drawerH - 48, 12);
       ctx.fillStyle = 'rgba(245, 158, 11, 0.12)';
       ctx.fill();
       ctx.strokeStyle = 'rgba(245, 158, 11, 0.65)';
@@ -503,14 +504,14 @@ function drawCampaignCard(ctx, c, index, x, y, w, h = CARD_H, withShadow = true)
       ctx.stroke();
 
       ctx.fillStyle = '#f59e0b';
-      ctx.font = '800 20px sans-serif';
-      ctx.fillText('STATUT DE LA TABLE', x + 48, drawerY + 56);
+      ctx.font = '800 22px sans-serif';
+      ctx.fillText('STATUT DE LA TABLE', x + 52, drawerY + 80);
 
       ctx.fillStyle = '#ffffff';
-      ctx.font = '900 38px sans-serif';
-      ctx.fillText('Table en pause', x + 48, drawerY + 108);
+      ctx.font = '900 40px sans-serif';
+      ctx.fillText('Table en pause', x + 52, drawerY + 145);
     } else if (c.status === 'prep') {
-      roundRect(ctx, x + 28, drawerY + 18, w - 56, drawerH - 34, 12);
+      roundRect(ctx, x + 28, drawerY + 24, w - 56, drawerH - 48, 12);
       ctx.fillStyle = 'rgba(99, 102, 241, 0.14)';
       ctx.fill();
       ctx.strokeStyle = 'rgba(129, 140, 248, 0.65)';
@@ -518,16 +519,16 @@ function drawCampaignCard(ctx, c, index, x, y, w, h = CARD_H, withShadow = true)
       ctx.stroke();
 
       ctx.fillStyle = '#818cf8';
-      ctx.font = '800 20px sans-serif';
-      ctx.fillText('STATUT DU MAÎTRE DU JEU', x + 48, drawerY + 56);
+      ctx.font = '800 22px sans-serif';
+      ctx.fillText('STATUT DU MAÎTRE DU JEU', x + 52, drawerY + 80);
 
       ctx.fillStyle = '#ffffff';
-      ctx.font = '900 38px sans-serif';
-      ctx.fillText('Préparation MJ en cours', x + 48, drawerY + 108);
+      ctx.font = '900 40px sans-serif';
+      ctx.fillText('Préparation MJ en cours', x + 52, drawerY + 145);
     } else if (c.status === 'unavailable' && c.unavailableUntilISO) {
       const untilStr = formatDayMonthFR(c.unavailableUntilISO);
 
-      roundRect(ctx, x + 28, drawerY + 18, w - 56, drawerH - 34, 12);
+      roundRect(ctx, x + 28, drawerY + 24, w - 56, drawerH - 48, 12);
       ctx.fillStyle = 'rgba(244, 63, 94, 0.14)';
       ctx.fill();
       ctx.strokeStyle = 'rgba(244, 63, 94, 0.65)';
@@ -536,23 +537,27 @@ function drawCampaignCard(ctx, c, index, x, y, w, h = CARD_H, withShadow = true)
 
       ctx.fillStyle = '#fda4af';
       ctx.font = '800 32px sans-serif';
-      ctx.fillText(`Joueurs non disponibles jusqu'au ${untilStr}.`, x + 48, drawerY + 96);
+      ctx.fillText(`Joueurs non disponibles jusqu'au ${untilStr}.`, x + 52, drawerY + 130);
     } else {
-      // Grille des 8 jours dans le tiroir inférieur
+      // Grille des 14 jours (2 rangées de 7 jours : Semaine 1 et Semaine 2)
       const gridX = x + 24;
-      const gridY = drawerY + 16;
       const gridW = w - 48;
-      const colGap = 6;
-      const colCount = 8;
+      const colGap = 8;
+      const colCount = 7;
       const colW = (gridW - colGap * (colCount - 1)) / colCount;
-      const colH = drawerH - 30;
+      const rowGap = 10;
+      const topPadding = 14;
+      const colH = (drawerH - topPadding * 2 - rowGap) / 2;
 
       weekDays.forEach((d, dayIdx) => {
-        const cx = gridX + dayIdx * (colW + colGap);
+        const weekRow = dayIdx < 7 ? 0 : 1;
+        const colIdx = dayIdx % 7;
+        const cx = gridX + colIdx * (colW + colGap);
+        const cy = drawerY + topPadding + weekRow * (colH + rowGap);
         const availPlayers = players.filter(p => p.voted && p.days.includes(dayIdx));
         const isFull = availPlayers.length === players.length && players.length > 0;
 
-        roundRect(ctx, cx, gridY, colW, colH, 10);
+        roundRect(ctx, cx, cy, colW, colH, 10);
         ctx.fillStyle = isFull ? 'rgba(16, 185, 129, 0.28)' : '#161922';
         ctx.fill();
         ctx.strokeStyle = isFull ? '#34d399' : 'rgba(255, 255, 255, 0.14)';
@@ -560,28 +565,28 @@ function drawCampaignCard(ctx, c, index, x, y, w, h = CARD_H, withShadow = true)
         ctx.stroke();
 
         ctx.fillStyle = isFull ? '#34d399' : '#ffffff';
-        ctx.font = '800 21px sans-serif';
+        ctx.font = '800 19px sans-serif';
         ctx.textAlign = 'center';
-        ctx.fillText(`${d.code} ${d.dayNum}`, cx + colW / 2, gridY + 32);
+        ctx.fillText(`${d.code} ${d.dayNum}`, cx + colW / 2, cy + 25);
 
         ctx.strokeStyle = 'rgba(255,255,255,0.1)';
         ctx.beginPath();
-        ctx.moveTo(cx + 8, gridY + 44);
-        ctx.lineTo(cx + colW - 8, gridY + 44);
+        ctx.moveTo(cx + 8, cy + 36);
+        ctx.lineTo(cx + colW - 8, cy + 36);
         ctx.stroke();
 
         if (availPlayers.length === 0) {
           ctx.fillStyle = 'rgba(255,255,255,0.25)';
           ctx.font = '700 16px sans-serif';
-          ctx.fillText('—', cx + colW / 2, gridY + 96);
+          ctx.fillText('—', cx + colW / 2, cy + 74);
         } else {
-          const r = 20;
+          const r = 18;
           const spacing = Math.min(26, (colW - 36) / Math.max(1, availPlayers.length - 1));
           const totalRowW = (availPlayers.length - 1) * spacing;
           const startAvX = cx + colW / 2 - totalRowW / 2;
 
           availPlayers.forEach((p, idx) => {
-            drawPlayerToken(ctx, p, startAvX + idx * spacing, gridY + 90, r, accentColor, 1);
+            drawPlayerToken(ctx, p, startAvX + idx * spacing, cy + 72, r, accentColor, 1);
           });
         }
         ctx.textAlign = 'left';

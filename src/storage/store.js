@@ -8,7 +8,8 @@ const {
   getRollingDays,
   getWeekDaysFromMonday,
   parseTimeInput,
-  getSessionEndTimestamp
+  getSessionEndTimestamp,
+  parseISODate
 } = require('../utils/dates');
 
 const DATA_DIR = path.join(__dirname, '..', '..', 'data');
@@ -116,7 +117,7 @@ function createCampaign(guildId, {
 }) {
   const { state, guild } = getGuildState(guildId);
   const normTime = time ? parseTimeInput(time).label : null;
-  const startDateISO = getTodayISO();
+  const startDateISO = getMondayISO();
 
   const campaign = {
     id: `jdr_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
@@ -137,7 +138,7 @@ function createCampaign(guildId, {
     unavailableUntilISO: null,
     status: 'poll', // 'poll' | 'confirmed' | 'unavailable'
     confirmedDateISO: null,
-    votes: {}, // { [userId]: [0, 3, 5] } (indices 0..7 pour les 8 jours)
+    votes: {}, // { [userId]: [0, 3, 5] } (indices 0..13 pour les 14 jours)
     lastPingMessageId: null
   };
 
@@ -179,9 +180,9 @@ function updateCampaignConfig(guildId, campaignId, updates) {
  * soit tous les joueurs du rôle ont voté mais aucun jour ne réunit 100%).
  */
 function handlePollWeekNoMatch(campaign) {
-  const startDateISO = campaign.startDateISO || campaign.weekMondayISO || getTodayISO();
-  const currentDays = getRollingDays(startDateISO, 8);
-  const lastDayISO = currentDays[7].iso;
+  const startDateISO = campaign.startDateISO || campaign.weekMondayISO || getMondayISO();
+  const currentDays = getRollingDays(startDateISO, 14);
+  const lastDayISO = currentDays[13].iso;
   campaign.failedWeeksCount = (campaign.failedWeeksCount || 0) + 1;
 
   if (campaign.failedWeeksCount >= 2) {
@@ -195,8 +196,8 @@ function handlePollWeekNoMatch(campaign) {
       campaign
     };
   } else {
-    // Passage immédiat aux 7 jours suivants (décalage d'une semaine pour recommencer le même jour)
-    const nextStartISO = addDaysISO(startDateISO, 7);
+    // Passage immédiat aux 2 semaines suivantes (décalage de 14 jours pour recommencer un lundi)
+    const nextStartISO = addDaysISO(startDateISO, 14);
     campaign.startDateISO = nextStartISO;
     campaign.weekMondayISO = nextStartISO;
     campaign.status = 'poll';
@@ -232,26 +233,27 @@ function submitPlayerVote(guildId, campaignId, userId, selectedValues, roleMembe
     return result;
   }
 
-  // Cas 2 : Le joueur a sélectionné un ou plusieurs jours (0..7)
+  // Cas 2 : Le joueur a sélectionné un ou plusieurs jours (0..13)
   const dayIndices = selectedValues
     .map(v => parseInt(v, 10))
-    .filter(n => !Number.isNaN(n) && n >= 0 && n <= 7);
+    .filter(n => !Number.isNaN(n) && n >= 0 && n <= 13);
 
   c.votes[userId] = dayIndices;
 
   // Liste effective des joueurs attendus (tous les membres du @Rôle)
   const activeVoterIds = roleMemberIds.length > 0 ? roleMemberIds : Object.keys(c.votes);
 
-  // Vérifie s'il existe un premier jour (indices 0..7) où 100% des joueurs du @Rôle sont disponibles
-  const firstCommonDayIndex = [0, 1, 2, 3, 4, 5, 6, 7].find(dayIdx =>
+  // Vérifie s'il existe un premier jour (indices 0..13) où 100% des joueurs du @Rôle sont disponibles
+  const allDaysIndices = Array.from({ length: 14 }, (_, i) => i);
+  const firstCommonDayIndex = allDaysIndices.find(dayIdx =>
     activeVoterIds.every(memberId =>
       Array.isArray(c.votes[memberId]) && c.votes[memberId].includes(dayIdx)
     )
   );
 
   if (firstCommonDayIndex !== undefined) {
-    const startDateISO = c.startDateISO || c.weekMondayISO || getTodayISO();
-    const days = getRollingDays(startDateISO, 8);
+    const startDateISO = c.startDateISO || c.weekMondayISO || getMondayISO();
+    const days = getRollingDays(startDateISO, 14);
     c.status = 'confirmed';
     c.confirmedDateISO = days[firstCommonDayIndex].iso;
     c.failedWeeksCount = 0;
@@ -327,11 +329,12 @@ function restartCampaignPoll(guildId, campaignId, { nextWeek = false } = {}) {
   if (nextWeek) {
     const todayISO = getTodayISO();
     const refDateISO = c.confirmedDateISO || c.startDateISO || c.weekMondayISO || todayISO;
-    const start = refDateISO >= todayISO ? addDaysISO(refDateISO, 1) : todayISO;
+    const refDate = parseISODate(refDateISO);
+    const start = getMondayISO(refDate, 1);
     c.startDateISO = start;
     c.weekMondayISO = start;
   } else {
-    const start = getTodayISO();
+    const start = getMondayISO();
     c.startDateISO = start;
     c.weekMondayISO = start;
   }
@@ -362,7 +365,7 @@ function setCampaignStatus(guildId, campaignId, newStatus) {
     c.failedWeeksCount = 0;
     c.unavailableUntilISO = null;
   } else if (newStatus === 'poll') {
-    const start = getTodayISO();
+    const start = getMondayISO();
     c.startDateISO = start;
     c.weekMondayISO = start;
     c.confirmedDateISO = null;
