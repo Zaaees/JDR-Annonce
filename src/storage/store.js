@@ -11,6 +11,7 @@ const {
   getSessionEndTimestamp,
   parseISODate
 } = require('../utils/dates');
+const { resolveCampaignSchedule } = require('../utils/schedulingOptimizer');
 
 const DATA_DIR = path.join(__dirname, '..', '..', 'data');
 const STATE_FILE = path.join(DATA_DIR, 'state.json');
@@ -243,19 +244,12 @@ function submitPlayerVote(guildId, campaignId, userId, selectedValues, roleMembe
   // Liste effective des joueurs attendus (tous les membres du @Rôle)
   const activeVoterIds = roleMemberIds.length > 0 ? roleMemberIds : Object.keys(c.votes);
 
-  // Vérifie s'il existe un premier jour (indices 0..13) où 100% des joueurs du @Rôle sont disponibles
-  const allDaysIndices = Array.from({ length: 14 }, (_, i) => i);
-  const firstCommonDayIndex = allDaysIndices.find(dayIdx =>
-    activeVoterIds.every(memberId =>
-      Array.isArray(c.votes[memberId]) && c.votes[memberId].includes(dayIdx)
-    )
-  );
+  // Résolution intelligente des créneaux (MRV lookahead + Smart Swap sans collision)
+  const resolution = resolveCampaignSchedule(guild.campaigns, c.id, activeVoterIds);
 
-  if (firstCommonDayIndex !== undefined) {
-    const startDateISO = c.startDateISO || c.weekMondayISO || getMondayISO();
-    const days = getRollingDays(startDateISO, 14);
+  if (resolution.action === 'CONFIRM') {
     c.status = 'confirmed';
-    c.confirmedDateISO = days[firstCommonDayIndex].iso;
+    c.confirmedDateISO = resolution.confirmedDateISO;
     c.failedWeeksCount = 0;
     c.unavailableUntilISO = null;
     saveState(state);
@@ -266,14 +260,50 @@ function submitPlayerVote(guildId, campaignId, userId, selectedValues, roleMembe
     };
   }
 
-  // Vérifie si tous les joueurs du @Rôle ont voté mais qu'aucun jour ne correspond
-  const allVoted = activeVoterIds.every(memberId => Array.isArray(c.votes[memberId]));
-  if (allVoted && activeVoterIds.length > 0) {
+  if (resolution.action === 'CONFIRM_WITH_SWAP') {
+    // Met à jour la table déplacée
+    const swapped = guild.campaigns.find(x => x.id === resolution.swappedCampaign.id);
+    if (swapped) {
+      swapped.confirmedDateISO = resolution.swappedNewDateISO;
+      swapped.status = 'confirmed';
+      swapped.failedWeeksCount = 0;
+      swapped.unavailableUntilISO = null;
+    }
+
+    // Met à jour la table courante
+    c.status = 'confirmed';
+    c.confirmedDateISO = resolution.confirmedDateISO;
+    c.failedWeeksCount = 0;
+    c.unavailableUntilISO = null;
+    saveState(state);
+
+    return {
+      event: 'AUTO_CONFIRMED_WITH_SWAP',
+      campaign: c,
+      confirmedDateISO: c.confirmedDateISO,
+      swappedCampaign: swapped || resolution.swappedCampaign,
+      swappedOldDateISO: resolution.swappedOldDateISO,
+      swappedNewDateISO: resolution.swappedNewDateISO
+    };
+  }
+
+  if (resolution.action === 'CONFLICT_BLOCKED') {
+    const result = handlePollWeekNoMatch(c);
+    saveState(state);
+    return {
+      ...result,
+      conflictReason: 'DATE_ALREADY_TAKEN',
+      conflictingCampaignNames: resolution.conflictingCampaignNames
+    };
+  }
+
+  if (resolution.action === 'NO_COMMON_DAYS') {
     const result = handlePollWeekNoMatch(c);
     saveState(state);
     return result;
   }
 
+  // Cas WAITING_VOTES : tous les joueurs n'ont pas encore voté
   saveState(state);
   return {
     event: 'VOTE_RECORDED',
@@ -282,12 +312,24 @@ function submitPlayerVote(guildId, campaignId, userId, selectedValues, roleMembe
 }
 
 /**
- * Fixe ou modifie manuellement la date d'une session (par le MJ)
+ * Fixe ou modifie manuellement la date d'une session (par le MJ).
+ * Refuse d'écraser un jour déjà confirmé par une autre table JDR.
  */
 function setManualSessionDate(guildId, campaignId, dateISO, timeStr = null) {
   const { state, guild } = getGuildState(guildId);
   const c = guild.campaigns.find(x => x.id === campaignId);
-  if (!c) return null;
+  if (!c) return { success: false, error: 'NOT_FOUND' };
+
+  const conflicting = guild.campaigns.find(
+    other => other.id !== campaignId && other.status === 'confirmed' && other.confirmedDateISO === dateISO
+  );
+  if (conflicting) {
+    return {
+      success: false,
+      error: 'DATE_ALREADY_TAKEN',
+      conflictingCampaign: conflicting
+    };
+  }
 
   c.status = 'confirmed';
   c.confirmedDateISO = dateISO;
@@ -297,7 +339,7 @@ function setManualSessionDate(guildId, campaignId, dateISO, timeStr = null) {
   c.failedWeeksCount = 0;
   c.unavailableUntilISO = null;
   saveState(state);
-  return c;
+  return { success: true, campaign: c };
 }
 
 /**

@@ -240,7 +240,7 @@ function buildPlayerVotePanel(campaign, userId) {
 /**
  * Panneau strictement réservé au MJ de la table (ou Administrateur).
  */
-function buildMJControlPanel(campaign) {
+function buildMJControlPanel(campaign, allCampaigns = []) {
   const startDateISO = campaign.startDateISO || campaign.weekMondayISO || getMondayISO();
   const weekDays = getRollingDays(startDateISO, 14);
   const rows = [];
@@ -249,11 +249,21 @@ function buildMJControlPanel(campaign) {
     .setCustomId(`mj_set_day:${campaign.id}`)
     .setPlaceholder('Fixer la date manuellement...')
     .addOptions(
-      weekDays.map(d => ({
-        label: campaign.time ? `${d.fullLabel} (${campaign.time})` : d.fullLabel,
-        value: d.iso,
-        default: campaign.status === 'confirmed' && campaign.confirmedDateISO === d.iso
-      }))
+      weekDays.map(d => {
+        const conflicting = allCampaigns.find(
+          c => c.id !== campaign.id && c.status === 'confirmed' && c.confirmedDateISO === d.iso
+        );
+        let label = campaign.time ? `${d.fullLabel} (${campaign.time})` : d.fullLabel;
+        if (conflicting) {
+          label = `${d.shortLabel} (⛔ Pris par ${conflicting.title})`;
+        }
+        return {
+          label: label.slice(0, 100),
+          value: d.iso,
+          default: campaign.status === 'confirmed' && campaign.confirmedDateISO === d.iso,
+          description: conflicting ? `Réservé par ${conflicting.title}`.slice(0, 100) : undefined
+        };
+      })
     );
 
   rows.push(new ActionRowBuilder().addComponents(quickDaySelect));
@@ -397,14 +407,45 @@ async function processVoteSubmission(client, interaction, guildId, campaign, sel
       content: `Session validée : **${dateStr}${timeInfo}**.`,
       components: []
     });
-  } else if (result.event === 'SHIFTED_NEXT_WEEK') {
-    const startDateISO = result.campaign.startDateISO || result.campaign.weekMondayISO || getMondayISO();
-    const nextDays = getRollingDays(startDateISO, 14);
+  } else if (result.event === 'AUTO_CONFIRMED_WITH_SWAP') {
+    const oldDateStr = formatFullDateFR(result.swappedOldDateISO);
+    const newDateStr = formatFullDateFR(result.swappedNewDateISO);
+    const swappedTimeInfo = result.swappedCampaign.time ? ` à ${result.swappedCampaign.time}` : '';
+
+    // Notifie la table déplacée en expliquant l'arbitrage automatique
+    await sendRolePing(
+      client,
+      guildId,
+      result.swappedCampaign,
+      `🔄 **Ajustement de planning automatique :**\nLa session de **${result.swappedCampaign.title}** a été déplacée au **${newDateStr}${swappedTimeInfo}** afin de libérer le **${oldDateStr}** pour **${result.campaign.title}** (qui n'avait qu'un seul jour possible).\nLes deux tables peuvent ainsi jouer ! 🎉`
+    );
+
+    // Notifie la table confirmée
+    const dateStr = formatFullDateFR(result.campaign.confirmedDateISO);
+    const timeInfo = result.campaign.time ? ` à ${result.campaign.time}` : '';
     await sendRolePing(
       client,
       guildId,
       result.campaign,
-      `Nouveau sondage de disponibilité pour **${result.campaign.title}** (du ${nextDays[0].fullLabel} au ${nextDays[13].fullLabel}).`
+      `Session validée pour **${result.campaign.title}** : **${dateStr}${timeInfo}**.`
+    );
+
+    await interaction.editReply({
+      content: `Session validée : **${dateStr}${timeInfo}** *(planning optimisé avec ${result.swappedCampaign.title})*.`,
+      components: []
+    });
+  } else if (result.event === 'SHIFTED_NEXT_WEEK') {
+    const startDateISO = result.campaign.startDateISO || result.campaign.weekMondayISO || getMondayISO();
+    const nextDays = getRollingDays(startDateISO, 14);
+    let pingMsg = `Nouveau sondage de disponibilité pour **${result.campaign.title}** (du ${nextDays[0].fullLabel} au ${nextDays[13].fullLabel}).`;
+    if (result.conflictReason === 'DATE_ALREADY_TAKEN' && result.conflictingCampaignNames?.length > 0) {
+      pingMsg = `⚠️ **Conflit de date :** Le créneau commun était déjà réservé par **${result.conflictingCampaignNames.join(', ')}**.\n${pingMsg}`;
+    }
+    await sendRolePing(
+      client,
+      guildId,
+      result.campaign,
+      pingMsg
     );
     const updatedPanel = buildPlayerVotePanel(result.campaign, interaction.user.id);
     await interaction.editReply({
@@ -414,8 +455,12 @@ async function processVoteSubmission(client, interaction, guildId, campaign, sel
   } else if (result.event === 'UNAVAILABLE_2_WEEKS') {
     await deleteCampaignPing(client, guildId, result.campaign);
     const untilStr = formatDayMonthFR(result.campaign.unavailableUntilISO);
+    let msg = `Joueurs non disponibles jusqu'au ${untilStr}.`;
+    if (result.conflictReason === 'DATE_ALREADY_TAKEN' && result.conflictingCampaignNames?.length > 0) {
+      msg = `Conflit de date avec **${result.conflictingCampaignNames.join(', ')}** : joueurs non disponibles sur un autre créneau jusqu'au ${untilStr}.`;
+    }
     await interaction.editReply({
-      content: `Joueurs non disponibles jusqu'au ${untilStr}.`,
+      content: msg,
       components: []
     });
   } else {
@@ -714,7 +759,7 @@ async function handleInteraction(client, interaction) {
         return;
       }
 
-      const mjPanel = buildMJControlPanel(campaign);
+      const mjPanel = buildMJControlPanel(campaign, guildData.campaigns);
       await interaction.reply({
         ...mjPanel,
         flags: MessageFlags.Ephemeral
@@ -968,7 +1013,7 @@ async function handleInteraction(client, interaction) {
       }
 
       if (mjCampaigns.length === 1) {
-        const mjPanel = buildMJControlPanel(mjCampaigns[0]);
+        const mjPanel = buildMJControlPanel(mjCampaigns[0], guildData.campaigns);
         await interaction.reply({
           ...mjPanel,
           flags: MessageFlags.Ephemeral
@@ -1004,7 +1049,7 @@ async function handleInteraction(client, interaction) {
         return;
       }
 
-      const mjPanel = buildMJControlPanel(campaign);
+      const mjPanel = buildMJControlPanel(campaign, guildData.campaigns);
       await interaction.update(mjPanel);
       return;
     }
@@ -1025,7 +1070,22 @@ async function handleInteraction(client, interaction) {
       }
 
       await interaction.deferUpdate();
-      const updated = setManualSessionDate(guildId, campaignId, selectedDateISO);
+      const setResult = setManualSessionDate(guildId, campaignId, selectedDateISO);
+
+      if (!setResult.success) {
+        if (setResult.error === 'DATE_ALREADY_TAKEN') {
+          const dateStr = formatFullDateFR(selectedDateISO);
+          await interaction.editReply({
+            content: `⛔ **Date indisponible :** Le **${dateStr}** est déjà réservé par la table **${setResult.conflictingCampaign.title}**.\nVeuillez choisir un autre jour pour éviter que deux sessions tombent le même jour.`,
+            components: []
+          });
+          return;
+        }
+        await interaction.editReply({ content: 'Erreur lors de la configuration de la date.', components: [] });
+        return;
+      }
+
+      const updated = setResult.campaign;
       await refreshDashboardMessage(client, guildId);
 
       const dateStr = formatFullDateFR(updated.confirmedDateISO);
