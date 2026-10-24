@@ -20,7 +20,12 @@ const { renderDashboardBuffer, renderCampaignCardBuffer } = require('../renderer
 const { embedStateInPng, extractStateFromPng } = require('../utils/pngState');
 const { saveBackupToDiscord, restoreBackupFromDiscord, getBotOwnerUser } = require('../storage/discordBackup');
 const { findBannerInDMs } = require('../utils/discordMedia');
-const { updateCampaignConfig } = require('../storage/store');
+const { updateCampaignConfig, updateCampaignMembers, setCampaignNudge } = require('../storage/store');
+const { runExclusive } = require('../utils/mutex');
+const { syncGuildEvents } = require('./scheduledEvents');
+
+// Délai minimum entre deux relances des retardataires pour une même table (anti-spam)
+const NUDGE_COOLDOWN_MS = 6 * 60 * 60 * 1000;
 
 /**
  * Récupère tous les membres humains possédant le @Rôle Discord d'une campagne.
@@ -49,6 +54,11 @@ async function getRolePlayers(discordGuild, campaign) {
       voted: votedDays !== null,
       days: votedDays || []
     });
+  }
+
+  // Mémorise la composition à jour de la table (conflits de planning par joueur/MJ)
+  if (players.length > 0) {
+    updateCampaignMembers(discordGuild.id, campaign.id, players.map(p => p.id));
   }
 
   return players;
@@ -100,6 +110,10 @@ async function cleanupObsoleteChannelMessages(client, guildId, channel) {
       if (c.lastPingMessageId) {
         validMessageIds.add(c.lastPingMessageId);
       }
+      // La relance des retardataires n'est conservée que tant que le sondage est ouvert
+      if (c.lastNudgeMessageId && c.status === 'poll') {
+        validMessageIds.add(c.lastNudgeMessageId);
+      }
     }
 
     const recentMessages = await channel.messages.fetch({ limit: 30 }).catch(() => null);
@@ -120,7 +134,7 @@ async function cleanupObsoleteChannelMessages(client, guildId, channel) {
  * Utilise Discord Components V2 (Option B) : bannières larges empilées dans un seul message,
  * avec boutons [Voter] et [Gérer (MJ)] intégrés directement sous chaque JDR.
  */
-async function refreshDashboardMessage(client, guildId) {
+async function refreshDashboardMessageUnsafe(client, guildId) {
   const { guild: guildData } = getGuildState(guildId);
   if (!guildData.channelId) return null;
 
@@ -263,6 +277,10 @@ async function refreshDashboardMessage(client, guildId) {
     }
   }
 
+  // Synchronise les événements Discord natifs (création / déplacement / suppression)
+  // avant la sauvegarde, pour que les identifiants d'événements soient inclus dans le backup.
+  await syncGuildEvents(client, guildId);
+
   // Sauvegarde permanente sur Discord (#jdr-donnees) pour survivre aux redémarrages de Render
   await saveBackupToDiscord(client, guildId).catch(() => null);
 
@@ -272,22 +290,53 @@ async function refreshDashboardMessage(client, guildId) {
   return targetMsg;
 }
 
+// Rafraîchissement déjà planifié mais pas encore démarré, par serveur (permet de regrouper les appels)
+const pendingRefreshes = new Map();
+
+/**
+ * Régénère le Méga-Dashboard (voir refreshDashboardMessageUnsafe).
+ * Les rafraîchissements d'un même serveur sont exécutés l'un après l'autre (jamais en parallèle),
+ * ce qui évite les doublons de message ou les écrasements lors de votes simultanés.
+ * Si un rafraîchissement est déjà en attente, il est réutilisé : il lira l'état le plus récent.
+ */
+function refreshDashboardMessage(client, guildId) {
+  const queued = pendingRefreshes.get(guildId);
+  if (queued) return queued;
+
+  const promise = runExclusive(`refresh:${guildId}`, async () => {
+    pendingRefreshes.delete(guildId); // tout nouvel appel planifiera une nouvelle exécution
+    return refreshDashboardMessageUnsafe(client, guildId);
+  });
+  pendingRefreshes.set(guildId, promise);
+  return promise;
+}
+
 /**
  * Supprime le message de ping d'une campagne spécifique (ex: session passée, date retirée ou table supprimée).
+ * Supprime également la dernière relance des retardataires de cette table.
  */
 async function deleteCampaignPing(client, guildId, campaign) {
-  if (!campaign || !campaign.lastPingMessageId) return;
+  if (!campaign || (!campaign.lastPingMessageId && !campaign.lastNudgeMessageId)) return;
   const { guild: guildData } = getGuildState(guildId);
   if (!guildData.channelId) return;
 
   const channel = await client.channels.fetch(guildData.channelId).catch(() => null);
   if (channel && channel.isTextBased()) {
-    const oldPing = await channel.messages.fetch(campaign.lastPingMessageId).catch(() => null);
-    if (oldPing) {
-      await oldPing.delete().catch(() => null);
+    if (campaign.lastPingMessageId) {
+      const oldPing = await channel.messages.fetch(campaign.lastPingMessageId).catch(() => null);
+      if (oldPing) {
+        await oldPing.delete().catch(() => null);
+      }
+    }
+    if (campaign.lastNudgeMessageId) {
+      const oldNudge = await channel.messages.fetch(campaign.lastNudgeMessageId).catch(() => null);
+      if (oldNudge) {
+        await oldNudge.delete().catch(() => null);
+      }
     }
   }
   setCampaignPingMessageId(guildId, campaign.id, null);
+  setCampaignNudge(guildId, campaign.id, null);
 }
 
 /**
@@ -397,23 +446,100 @@ async function sendRolePing(client, guildId, campaign, messageText) {
   const channel = await client.channels.fetch(guildData.channelId).catch(() => null);
   if (!channel || !channel.isTextBased()) return;
 
-  if (campaign.lastPingMessageId) {
-    const oldPing = await channel.messages.fetch(campaign.lastPingMessageId).catch(() => null);
-    if (oldPing) {
-      await oldPing.delete().catch(() => null);
-    }
-  }
+  // Envoi + enregistrement de l'ID du ping de façon atomique vis-à-vis du rafraîchissement
+  // (sinon le nettoyage du salon pourrait supprimer le ping avant qu'il soit enregistré).
+  const sent = await runExclusive(`refresh:${guildId}`, async () => {
+    // Relit l'état courant : le ping et la relance précédents sont remplacés
+    const { guild: freshGuild } = getGuildState(guildId);
+    const current = freshGuild.campaigns.find(c => c.id === campaign.id) || campaign;
 
-  const sent = await channel.send({
-    content: `<@&${campaign.roleId}> ${messageText}`,
-    allowedMentions: { roles: [campaign.roleId] }
-  }).catch(() => null);
+    for (const oldId of [current.lastPingMessageId, current.lastNudgeMessageId]) {
+      if (!oldId) continue;
+      const oldMsg = await channel.messages.fetch(oldId).catch(() => null);
+      if (oldMsg) {
+        await oldMsg.delete().catch(() => null);
+      }
+    }
+    setCampaignNudge(guildId, campaign.id, null);
+
+    const message = await channel.send({
+      content: `<@&${campaign.roleId}> ${messageText}`,
+      allowedMentions: { roles: [campaign.roleId] }
+    }).catch(() => null);
+
+    if (message) {
+      setCampaignPingMessageId(guildId, campaign.id, message.id);
+    }
+    return message;
+  });
 
   if (sent) {
-    setCampaignPingMessageId(guildId, campaign.id, sent.id);
     // Met à jour les métadonnées PNG pour mémoriser le nouvel ID de ping
     await refreshDashboardMessage(client, guildId).catch(() => null);
   }
+}
+
+/**
+ * Relance uniquement les joueurs du @Rôle qui n'ont pas encore voté (sans déranger les autres).
+ * Anti-spam : une seule relance visible par table (la précédente est remplacée) et un délai
+ * minimal de NUDGE_COOLDOWN_MS entre deux relances.
+ *
+ * @returns {Promise<{status: 'SENT'|'NONE_MISSING'|'COOLDOWN'|'NOT_POLLING'|'NO_CHANNEL'|'NOT_FOUND'|'ERROR',
+ *   missingCount?: number, totalCount?: number, retryAt?: number}>}
+ */
+async function sendLateVotersNudge(client, guildId, campaignId) {
+  const { guild: guildData } = getGuildState(guildId);
+  const campaign = guildData.campaigns.find(c => c.id === campaignId);
+  if (!campaign) return { status: 'NOT_FOUND' };
+  if (campaign.status !== 'poll') return { status: 'NOT_POLLING' };
+  if (!guildData.channelId) return { status: 'NO_CHANNEL' };
+
+  if (campaign.lastNudgeAt && Date.now() - campaign.lastNudgeAt < NUDGE_COOLDOWN_MS) {
+    return { status: 'COOLDOWN', retryAt: campaign.lastNudgeAt + NUDGE_COOLDOWN_MS };
+  }
+
+  const discordGuild = await client.guilds.fetch(guildId).catch(() => null);
+  const channel = await client.channels.fetch(guildData.channelId).catch(() => null);
+  if (!discordGuild || !channel || !channel.isTextBased()) return { status: 'NO_CHANNEL' };
+
+  const players = await getRolePlayers(discordGuild, campaign);
+  const missing = players.filter(p => !p.voted);
+  if (players.length === 0 || missing.length === 0) {
+    return { status: 'NONE_MISSING', totalCount: players.length };
+  }
+
+  const mentionIds = missing.map(p => p.id);
+  const voted = players.length - missing.length;
+  const content =
+    `🔔 ${mentionIds.map(id => `<@${id}>`).join(' ')}\n` +
+    `Il manque votre vote pour **${campaign.title}** (${voted}/${players.length} ont déjà répondu).`;
+
+  const sent = await runExclusive(`refresh:${guildId}`, async () => {
+    const { guild: freshGuild } = getGuildState(guildId);
+    const current = freshGuild.campaigns.find(c => c.id === campaignId);
+    if (!current || current.status !== 'poll') return null;
+
+    // Remplace la relance précédente pour ne pas polluer le salon
+    if (current.lastNudgeMessageId) {
+      const oldMsg = await channel.messages.fetch(current.lastNudgeMessageId).catch(() => null);
+      if (oldMsg) {
+        await oldMsg.delete().catch(() => null);
+      }
+    }
+
+    const message = await channel.send({
+      content,
+      allowedMentions: { users: mentionIds }
+    }).catch(() => null);
+
+    if (message) {
+      setCampaignNudge(guildId, campaignId, message.id);
+    }
+    return message;
+  });
+
+  if (!sent) return { status: 'ERROR' };
+  return { status: 'SENT', missingCount: missing.length, totalCount: players.length };
 }
 
 module.exports = {
@@ -422,5 +548,6 @@ module.exports = {
   deleteCampaignPing,
   tryRestoreStateFromMessage,
   autoRecoverGuildsFromDiscord,
-  sendRolePing
+  sendRolePing,
+  sendLateVotersNudge
 };

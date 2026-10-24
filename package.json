@@ -5,7 +5,7 @@
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js",
-    "test": "node src/test-scheduling.js",
+    "test": "node src/test-scheduling.js && node src/test-mutex.js",
     "test-render": "node src/test-render.js"
   },
   "dependencies": {

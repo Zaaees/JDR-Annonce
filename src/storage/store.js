@@ -11,7 +11,7 @@ const {
   getSessionEndTimestamp,
   parseISODate
 } = require('../utils/dates');
-const { resolveCampaignSchedule } = require('../utils/schedulingOptimizer');
+const { resolveCampaignSchedule, campaignsConflict } = require('../utils/schedulingOptimizer');
 
 const DATA_DIR = path.join(__dirname, '..', '..', 'data');
 const STATE_FILE = path.join(DATA_DIR, 'state.json');
@@ -103,6 +103,52 @@ function setCampaignPingMessageId(guildId, campaignId, pingMessageId) {
   }
 }
 
+/**
+ * Met à jour la liste des joueurs connus d'une table (n'écrit sur disque que si elle a changé).
+ */
+function updateCampaignMembers(guildId, campaignId, memberIds) {
+  if (!Array.isArray(memberIds)) return;
+  const { state, guild } = getGuildState(guildId);
+  const c = guild.campaigns.find(x => x.id === campaignId);
+  if (!c) return;
+  const next = [...new Set(memberIds)].sort();
+  const prev = Array.isArray(c.memberIds) ? [...c.memberIds].sort() : [];
+  if (next.length === prev.length && next.every((id, i) => id === prev[i])) return;
+  c.memberIds = next;
+  saveState(state);
+}
+
+/**
+ * Mémorise la dernière relance des retardataires (message + horodatage).
+ */
+function setCampaignNudge(guildId, campaignId, messageId, at = Date.now()) {
+  const { state, guild } = getGuildState(guildId);
+  const c = guild.campaigns.find(x => x.id === campaignId);
+  if (!c) return;
+  c.lastNudgeMessageId = messageId || null;
+  c.lastNudgeAt = messageId ? at : null;
+  saveState(state);
+}
+
+/**
+ * Mémorise l'identifiant de l'événement Discord natif lié à la session confirmée.
+ */
+function setCampaignEventId(guildId, campaignId, eventId) {
+  const { state, guild } = getGuildState(guildId);
+  const c = guild.campaigns.find(x => x.id === campaignId);
+  if (!c) return;
+  c.scheduledEventId = eventId || null;
+  saveState(state);
+}
+
+/**
+ * Oublie la relance en cours (nouveau sondage = nouveau cycle de relance).
+ */
+function resetNudge(campaign) {
+  campaign.lastNudgeMessageId = null;
+  campaign.lastNudgeAt = null;
+}
+
 function createCampaign(guildId, {
   title,
   mjId,
@@ -140,7 +186,11 @@ function createCampaign(guildId, {
     status: 'poll', // 'poll' | 'confirmed' | 'unavailable'
     confirmedDateISO: null,
     votes: {}, // { [userId]: [0, 3, 5] } (indices 0..13 pour les 14 jours)
-    lastPingMessageId: null
+    memberIds: [], // Joueurs connus du @Rôle (sert aux conflits de planning par participant)
+    lastPingMessageId: null,
+    lastNudgeMessageId: null, // Dernière relance des retardataires
+    lastNudgeAt: null,
+    scheduledEventId: null // Événement Discord natif lié à la session confirmée
   };
 
   guild.campaigns.push(campaign);
@@ -192,6 +242,7 @@ function handlePollWeekNoMatch(campaign) {
     campaign.confirmedDateISO = null;
     campaign.unavailableUntilISO = lastDayISO;
     campaign.votes = {};
+    resetNudge(campaign);
     return {
       event: 'UNAVAILABLE_2_WEEKS',
       campaign
@@ -205,6 +256,7 @@ function handlePollWeekNoMatch(campaign) {
     campaign.confirmedDateISO = null;
     campaign.unavailableUntilISO = null;
     campaign.votes = {};
+    resetNudge(campaign);
     return {
       event: 'SHIFTED_NEXT_WEEK',
       campaign
@@ -240,6 +292,11 @@ function submitPlayerVote(guildId, campaignId, userId, selectedValues, roleMembe
     .filter(n => !Number.isNaN(n) && n >= 0 && n <= 13);
 
   c.votes[userId] = dayIndices;
+
+  // Mémorise la composition connue de la table (sert à détecter les conflits par participant)
+  if (Array.isArray(roleMemberIds) && roleMemberIds.length > 0) {
+    c.memberIds = [...roleMemberIds];
+  }
 
   // Liste effective des joueurs attendus (tous les membres du @Rôle)
   const activeVoterIds = roleMemberIds.length > 0 ? roleMemberIds : Object.keys(c.votes);
@@ -321,7 +378,11 @@ function setManualSessionDate(guildId, campaignId, dateISO, timeStr = null) {
   if (!c) return { success: false, error: 'NOT_FOUND' };
 
   const conflicting = guild.campaigns.find(
-    other => other.id !== campaignId && other.status === 'confirmed' && other.confirmedDateISO === dateISO
+    other =>
+      other.id !== campaignId &&
+      other.status === 'confirmed' &&
+      other.confirmedDateISO === dateISO &&
+      campaignsConflict(other, c)
   );
   if (conflicting) {
     return {
@@ -387,6 +448,7 @@ function restartCampaignPoll(guildId, campaignId, { nextWeek = false } = {}) {
   c.failedWeeksCount = 0;
   c.unavailableUntilISO = null;
   c.votes = {};
+  resetNudge(c);
   saveState(state);
   return c;
 }
@@ -404,6 +466,7 @@ function setCampaignStatus(guildId, campaignId, newStatus) {
     c.confirmedDateISO = null;
     c.time = null;
     c.votes = {};
+    resetNudge(c);
     c.failedWeeksCount = 0;
     c.unavailableUntilISO = null;
   } else if (newStatus === 'poll') {
@@ -413,6 +476,7 @@ function setCampaignStatus(guildId, campaignId, newStatus) {
     c.confirmedDateISO = null;
     c.time = null;
     c.votes = {};
+    resetNudge(c);
     c.failedWeeksCount = 0;
     c.unavailableUntilISO = null;
   }
@@ -435,6 +499,9 @@ module.exports = {
   restoreGuildState,
   setDashboardMessageId,
   setCampaignPingMessageId,
+  updateCampaignMembers,
+  setCampaignNudge,
+  setCampaignEventId,
   createCampaign,
   deleteCampaign,
   updateCampaignConfig,

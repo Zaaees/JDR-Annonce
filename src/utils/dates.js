@@ -165,7 +165,43 @@ function parseUserDateFR(input) {
   return formatISODate(d);
 }
 
+/**
+ * Décalage (en minutes) entre l'heure de Paris et UTC à un instant donné (gère l'heure d'été/hiver).
+ */
+function getParisOffsetMinutes(utcMs) {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Europe/Paris',
+    hourCycle: 'h23',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit'
+  }).formatToParts(new Date(utcMs));
+  const get = type => parseInt(parts.find(p => p.type === type).value, 10);
+  const asUTC = Date.UTC(get('year'), get('month') - 1, get('day'), get('hour'), get('minute'), get('second'));
+  return (asUTC - Math.floor(utcMs / 1000) * 1000) / 60000;
+}
+
+/**
+ * Convertit une date ISO + heure "murale" de Paris en objet Date (instant absolu),
+ * indépendamment du fuseau horaire du serveur d'hébergement (Render tourne en UTC).
+ */
+function parisWallTimeToDate(dateISO, hours = 21, minutes = 0) {
+  const [y, m, d] = dateISO.split('-').map(Number);
+  const naive = Date.UTC(y, m - 1, d, hours, minutes, 0);
+  const firstOffset = getParisOffsetMinutes(naive);
+  let ts = naive - firstOffset * 60000;
+  const secondOffset = getParisOffsetMinutes(ts);
+  if (secondOffset !== firstOffset) {
+    ts = naive - secondOffset * 60000;
+  }
+  return new Date(ts);
+}
+
 module.exports = {
+  parisWallTimeToDate,
   DAYS_SHORT,
   DAYS_FULL,
   MONTHS_FULL,

@@ -35,10 +35,14 @@ const {
   refreshDashboardMessage,
   deleteCampaignPing,
   tryRestoreStateFromMessage,
-  sendRolePing
+  sendRolePing,
+  sendLateVotersNudge
 } = require('./dashboardManager');
 const { createCropSession } = require('../server/cropServer');
 const { restoreBackupFromDiscord } = require('../storage/discordBackup');
+const { runExclusive } = require('../utils/mutex');
+const { campaignsConflict } = require('../utils/schedulingOptimizer');
+const { removeCampaignEvent } = require('./scheduledEvents');
 
 // Sélections en cours (avant clic sur "Valider") : Map<`${campaignId}:${userId}`, Set<number>>
 const draftSelections = new Map();
@@ -164,13 +168,33 @@ function buildPlayerVotePanel(campaign, userId) {
   const weekDays = getRollingDays(startDateISO, 14);
   const selectedSet = getOrInitDraft(campaign, userId);
 
+  // Compteur d'affluence : nombre de joueurs disponibles chaque jour, sur le total attendu.
+  // Compte les votes déjà validés des AUTRES joueurs + la sélection en cours de ce joueur.
+  const knownMembers = Array.isArray(campaign.memberIds) ? campaign.memberIds : [];
+  const votes = campaign.votes || {};
+  const expectedIds = new Set(knownMembers.length > 0 ? knownMembers : Object.keys(votes));
+  expectedIds.add(userId);
+  const totalPlayers = expectedIds.size;
+  const availabilityCount = idx => {
+    let count = 0;
+    for (const [voterId, days] of Object.entries(votes)) {
+      if (voterId === userId || !Array.isArray(days)) continue;
+      if (knownMembers.length > 0 && !knownMembers.includes(voterId)) continue; // ancien membre du rôle
+      if (days.includes(idx)) count++;
+    }
+    if (selectedSet.has(idx)) count++;
+    return count;
+  };
+  const buildDayLabel = (d, idx, isSelected) =>
+    `${isSelected ? '✓ ' : ''}${d.shortLabel} (${availabilityCount(idx)}/${totalPlayers})`;
+
   // Ligne 1 : Semaine 1 - Lundi à Vendredi (indices 0 à 4)
   const rowDays1 = new ActionRowBuilder().addComponents(
     weekDays.slice(0, 5).map((d, idx) => {
       const isSelected = selectedSet.has(idx);
       return new ButtonBuilder()
         .setCustomId(`toggle_day:${campaign.id}:${idx}`)
-        .setLabel(isSelected ? `✓ ${d.shortLabel}` : d.shortLabel)
+        .setLabel(buildDayLabel(d, idx, isSelected))
         .setStyle(isSelected ? ButtonStyle.Success : ButtonStyle.Secondary);
     })
   );
@@ -182,7 +206,7 @@ function buildPlayerVotePanel(campaign, userId) {
       const isSelected = selectedSet.has(idx);
       return new ButtonBuilder()
         .setCustomId(`toggle_day:${campaign.id}:${idx}`)
-        .setLabel(isSelected ? `✓ ${d.shortLabel}` : d.shortLabel)
+        .setLabel(buildDayLabel(d, idx, isSelected))
         .setStyle(isSelected ? ButtonStyle.Success : ButtonStyle.Secondary);
     })
   );
@@ -194,7 +218,7 @@ function buildPlayerVotePanel(campaign, userId) {
       const isSelected = selectedSet.has(idx);
       return new ButtonBuilder()
         .setCustomId(`toggle_day:${campaign.id}:${idx}`)
-        .setLabel(isSelected ? `✓ ${d.shortLabel}` : d.shortLabel)
+        .setLabel(buildDayLabel(d, idx, isSelected))
         .setStyle(isSelected ? ButtonStyle.Success : ButtonStyle.Secondary);
     })
   );
@@ -206,7 +230,7 @@ function buildPlayerVotePanel(campaign, userId) {
       const isSelected = selectedSet.has(idx);
       return new ButtonBuilder()
         .setCustomId(`toggle_day:${campaign.id}:${idx}`)
-        .setLabel(isSelected ? `✓ ${d.shortLabel}` : d.shortLabel)
+        .setLabel(buildDayLabel(d, idx, isSelected))
         .setStyle(isSelected ? ButtonStyle.Success : ButtonStyle.Secondary);
     })
   );
@@ -231,7 +255,7 @@ function buildPlayerVotePanel(campaign, userId) {
   );
 
   return {
-    content: `**${campaign.title}**\n🗓️ **Semaine 1 :** du ${weekDays[0].shortLabel} au ${weekDays[6].shortLabel}\n🗓️ **Semaine 2 :** du ${weekDays[7].shortLabel} au ${weekDays[13].shortLabel}`,
+    content: `**${campaign.title}**\n🗓️ **Semaine 1 :** du ${weekDays[0].shortLabel} au ${weekDays[6].shortLabel}\n🗓️ **Semaine 2 :** du ${weekDays[7].shortLabel} au ${weekDays[13].shortLabel}\n👥 *Le chiffre entre parenthèses indique combien de joueurs sont disponibles ce jour-là.*`,
     components: [rowDays1, rowDays2, rowDays3, rowDays4, rowActions],
     allowedMentions: { parse: [] }
   };
@@ -251,7 +275,7 @@ function buildMJControlPanel(campaign, allCampaigns = []) {
     .addOptions(
       weekDays.map(d => {
         const conflicting = allCampaigns.find(
-          c => c.id !== campaign.id && c.status === 'confirmed' && c.confirmedDateISO === d.iso
+          c => c.id !== campaign.id && c.status === 'confirmed' && c.confirmedDateISO === d.iso && campaignsConflict(c, campaign)
         );
         let label = campaign.time ? `${d.fullLabel} (${campaign.time})` : d.fullLabel;
         if (conflicting) {
@@ -350,6 +374,16 @@ function buildMJControlPanel(campaign, allCampaigns = []) {
     );
     rows.push(pollRow);
 
+    if (campaign.status === 'poll') {
+      const nudgeRow = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`mj_nudge:${campaign.id}`)
+          .setLabel('🔔 Relancer les retardataires')
+          .setStyle(ButtonStyle.Primary)
+      );
+      rows.push(nudgeRow);
+    }
+
     const deleteRow = new ActionRowBuilder().addComponents(
       new ButtonBuilder()
         .setCustomId(`mj_delete:${campaign.id}`)
@@ -375,8 +409,25 @@ function buildMJControlPanel(campaign, allCampaigns = []) {
 /**
  * Traite le résultat d'un vote joueur (validation des jours ou clic sur "Semaine prochaine")
  */
-async function processVoteSubmission(client, interaction, guildId, campaign, selectedValues) {
+async function processVoteSubmission(client, interaction, guildId, initialCampaign, selectedValues) {
+  // Accuse réception immédiatement (Discord impose 3 s) : le traitement réel peut attendre son tour
   await interaction.deferUpdate();
+
+  // File d'attente par serveur : les votes simultanés sont traités l'un après l'autre,
+  // chacun voyant l'état à jour laissé par le précédent.
+  await runExclusive(`mutation:${guildId}`, () =>
+    processVoteSubmissionLocked(client, interaction, guildId, initialCampaign.id, selectedValues)
+  );
+}
+
+async function processVoteSubmissionLocked(client, interaction, guildId, campaignId, selectedValues) {
+  // Relit l'état à jour : le sondage a pu se clôturer pendant l'attente dans la file
+  const { guild: currentGuild } = getGuildState(guildId);
+  const campaign = currentGuild.campaigns.find(c => c.id === campaignId);
+  if (!campaign || campaign.status !== 'poll') {
+    await interaction.editReply({ content: 'Ce sondage n’est plus actif.', components: [] });
+    return;
+  }
 
   const discordGuild = await client.guilds.fetch(guildId);
   const rolePlayers = await getRolePlayers(discordGuild, campaign);
@@ -1070,6 +1121,8 @@ async function handleInteraction(client, interaction) {
       }
 
       await interaction.deferUpdate();
+      // Les actions MJ passent par la même file d'attente que les votes (aucune course d'état)
+      await runExclusive(`mutation:${guildId}`, async () => {
       const setResult = setManualSessionDate(guildId, campaignId, selectedDateISO);
 
       if (!setResult.success) {
@@ -1100,6 +1153,7 @@ async function handleInteraction(client, interaction) {
       await interaction.editReply({
         content: `Date fixée au **${dateStr}${timeInfo}**.`,
         components: []
+      });
       });
       return;
     }
@@ -1176,6 +1230,34 @@ async function handleInteraction(client, interaction) {
       }
 
       await interaction.deferUpdate();
+
+      // Toutes les actions MJ sont sérialisées avec les votes pour ce serveur
+      await runExclusive(`mutation:${guildId}`, async () => {
+      // Relit la table à jour (elle a pu changer pendant l'attente dans la file)
+      const campaign = getGuildState(guildId).guild.campaigns.find(c => c.id === campaignId);
+      if (!campaign) {
+        await interaction.editReply({ content: 'Cette table n’existe plus.', components: [] });
+        return;
+      }
+
+      if (action === 'mj_nudge') {
+        const nudge = await sendLateVotersNudge(client, guildId, campaignId);
+        let message = 'Impossible d’envoyer la relance.';
+        if (nudge.status === 'SENT') {
+          message = `🔔 Relance envoyée à **${nudge.missingCount}** joueur(s) n’ayant pas encore voté (sur ${nudge.totalCount}).`;
+        } else if (nudge.status === 'NONE_MISSING') {
+          message = 'Tous les joueurs ont déjà voté, aucune relance nécessaire.';
+        } else if (nudge.status === 'COOLDOWN') {
+          const retryTs = Math.ceil(nudge.retryAt / 1000);
+          message = `Une relance a déjà été envoyée récemment. Nouvelle relance possible <t:${retryTs}:R>.`;
+        } else if (nudge.status === 'NOT_POLLING') {
+          message = 'Aucun sondage en cours pour cette table.';
+        } else if (nudge.status === 'NO_CHANNEL') {
+          message = 'Le salon du tableau n’est pas configuré ou est inaccessible.';
+        }
+        await interaction.editReply({ content: message, components: [] });
+        return;
+      }
 
       if (action === 'mj_pause') {
         await deleteCampaignPing(client, guildId, campaign);
@@ -1266,6 +1348,7 @@ async function handleInteraction(client, interaction) {
 
       if (action === 'mj_delete') {
         await deleteCampaignPing(client, guildId, campaign);
+        await removeCampaignEvent(client, guildId, campaign);
         const removed = deleteCampaign(guildId, campaignId);
         await refreshDashboardMessage(client, guildId);
         await interaction.editReply({
@@ -1274,6 +1357,7 @@ async function handleInteraction(client, interaction) {
         });
         return;
       }
+      });
     }
   } catch (err) {
     console.error('Erreur interaction Discord:', err);

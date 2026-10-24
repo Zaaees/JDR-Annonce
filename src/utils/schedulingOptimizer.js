@@ -5,6 +5,37 @@ const {
 } = require('./dates');
 
 /**
+ * Retourne l'ensemble des participants connus d'une table (joueurs du @Rôle + MJ).
+ */
+function getCampaignParticipants(campaign) {
+  const ids = new Set();
+  if (campaign && Array.isArray(campaign.memberIds)) {
+    campaign.memberIds.forEach(id => ids.add(id));
+  }
+  if (campaign && campaign.mjId) ids.add(campaign.mjId);
+  return ids;
+}
+
+/**
+ * Indique si deux tables entrent en conflit de planning, c'est-à-dire si elles partagent
+ * au moins un participant (joueur ou MJ). Deux tables sans aucun participant commun
+ * peuvent jouer le même jour.
+ * Par prudence, si la composition d'une des deux tables est encore inconnue
+ * (aucun membre connu), on considère qu'il y a conflit (ancien comportement).
+ */
+function campaignsConflict(a, b) {
+  if (!a || !b) return false;
+  const hasKnownMembers = c => Array.isArray(c.memberIds) && c.memberIds.length > 0;
+  if (!hasKnownMembers(a) || !hasKnownMembers(b)) return true;
+
+  const participantsA = getCampaignParticipants(a);
+  for (const id of getCampaignParticipants(b)) {
+    if (participantsA.has(id)) return true;
+  }
+  return false;
+}
+
+/**
  * Récupère la liste des 14 jours d'une campagne avec labels et ISO.
  */
 function getCampaignDays(campaign) {
@@ -92,6 +123,8 @@ function calculateContentionScore(candIso, targetCampaign, allCampaigns) {
   for (const other of allCampaigns) {
     if (!other || other.id === targetCampaign.id) continue;
     if (other.status !== 'poll') continue;
+    // Une table sans participant commun ne peut pas gêner la table ciblée
+    if (!campaignsConflict(other, targetCampaign)) continue;
 
     const otherPotential = getCampaignPotentialDates(other);
     if (otherPotential.includes(candIso)) {
@@ -138,9 +171,14 @@ function findAlternativeDateForConfirmedCampaign(
 
   const excludeSet = new Set(excludeDateISOs);
 
-  // Exclut les dates réservées par d'autres campagnes confirmées
+  // Exclut les dates réservées par d'autres campagnes confirmées partageant des participants
   for (const c of allCampaigns) {
-    if (c.id !== confirmedCampaign.id && c.status === 'confirmed' && c.confirmedDateISO) {
+    if (
+      c.id !== confirmedCampaign.id &&
+      c.status === 'confirmed' &&
+      c.confirmedDateISO &&
+      campaignsConflict(c, confirmedCampaign)
+    ) {
       excludeSet.add(c.confirmedDateISO);
     }
   }
@@ -202,11 +240,19 @@ function resolveCampaignSchedule(allCampaigns, targetCampaignId, roleMemberIds =
     return { action: 'NO_COMMON_DAYS' };
   }
 
-  // Dictionnaire des dates déjà occupées par des campagnes confirmées
+  // Dictionnaire des dates déjà occupées par des campagnes confirmées EN CONFLIT avec la cible
+  // (même joueur ou même MJ). Les tables sans participant commun ne bloquent pas la date.
+  // occupiedMap : date ISO -> liste des campagnes en conflit confirmées ce jour-là
   const occupiedMap = new Map();
   for (const c of allCampaigns) {
-    if (c.id !== target.id && c.status === 'confirmed' && c.confirmedDateISO) {
-      occupiedMap.set(c.confirmedDateISO, c);
+    if (
+      c.id !== target.id &&
+      c.status === 'confirmed' &&
+      c.confirmedDateISO &&
+      campaignsConflict(c, target)
+    ) {
+      if (!occupiedMap.has(c.confirmedDateISO)) occupiedMap.set(c.confirmedDateISO, []);
+      occupiedMap.get(c.confirmedDateISO).push(c);
     }
   }
 
@@ -231,8 +277,10 @@ function resolveCampaignSchedule(allCampaigns, targetCampaignId, roleMemberIds =
   // 2. Toutes les dates unanimes de cette table sont occupées.
   // Tentative de permutation intelligente (Smart Swap) avec une table occupante pouvant bouger.
   for (const clashIso of unanimousDates) {
-    const conflictingCampaign = occupiedMap.get(clashIso);
-    if (!conflictingCampaign) continue;
+    const occupants = occupiedMap.get(clashIso);
+    // Une permutation n'a de sens que si une seule table occupe le créneau
+    if (!occupants || occupants.length !== 1) continue;
+    const conflictingCampaign = occupants[0];
 
     const altDateIso = findAlternativeDateForConfirmedCampaign(
       conflictingCampaign,
@@ -253,7 +301,9 @@ function resolveCampaignSchedule(allCampaigns, targetCampaignId, roleMemberIds =
 
   // 3. Aucun jour libre et aucune permutation possible : vrai conflit bloquant
   const conflictingNames = [...new Set(
-    unanimousDates.map(iso => occupiedMap.get(iso)?.title).filter(Boolean)
+    unanimousDates
+      .flatMap(iso => (occupiedMap.get(iso) || []).map(c => c.title))
+      .filter(Boolean)
   )];
 
   return {
@@ -263,6 +313,8 @@ function resolveCampaignSchedule(allCampaigns, targetCampaignId, roleMemberIds =
 }
 
 module.exports = {
+  getCampaignParticipants,
+  campaignsConflict,
   getCampaignDays,
   getCampaignUnanimousDates,
   getCampaignPotentialDates,
