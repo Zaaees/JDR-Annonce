@@ -19,6 +19,7 @@ function createCropSession(guildId, campaignId, imageUrl, userId = null) {
     guildId,
     campaignId,
     imageUrl,
+    userId,
     expiresAt: Date.now() + 30 * 60 * 1000 // 30 minutes
   });
   return token;
@@ -106,6 +107,12 @@ function getCropHtml(session, token) {
       updateTransform();
     };
 
+    img.onerror = () => {
+      statusDiv.style.color = '#f87171';
+      statusDiv.textContent = "Impossible de charger l'image source (lien expiré ou inaccessible). Veuillez relancer la commande sur Discord.";
+      saveBtn.disabled = true;
+    };
+
     function updateTransform() {
       const effectiveScale = baseScale * currentZoom;
       const boxW = box.clientWidth;
@@ -189,15 +196,17 @@ function getCropHtml(session, token) {
           body: JSON.stringify({ imageBase64: base64Png })
         });
 
+        const data = await res.json().catch(() => ({}));
+
         if (res.ok) {
           statusDiv.style.color = '#34d399';
           statusDiv.textContent = 'Bannière mise à jour avec succès ! Tu peux fermer cette page et retourner sur Discord.';
         } else {
-          throw new Error();
+          throw new Error(data.error || 'Erreur serveur');
         }
       } catch (err) {
         statusDiv.style.color = '#f87171';
-        statusDiv.textContent = 'Erreur lors de la mise à jour. Réessaie ou relance la commande sur Discord.';
+        statusDiv.textContent = err.message ? 'Erreur : ' + err.message : 'Erreur lors de la mise à jour. Réessaie ou relance la commande sur Discord.';
         saveBtn.disabled = false;
       }
     });
@@ -209,7 +218,7 @@ function getCropHtml(session, token) {
 function handleCropHttp(req, res, client) {
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
 
-  // 1. Servir la page HTML du crop : GET /crop/:token
+  // 1a. Servir la page HTML du crop : GET /crop/:token
   if (req.method === 'GET' && url.pathname.startsWith('/crop/')) {
     const token = url.pathname.split('/crop/')[1];
     const session = cropSessions.get(token);
@@ -225,6 +234,20 @@ function handleCropHttp(req, res, client) {
     return true;
   }
 
+  // 1b. Servir les images locales : GET /uploads/:filename
+  if (req.method === 'GET' && url.pathname.startsWith('/uploads/')) {
+    const filename = path.basename(url.pathname);
+    const filePath = path.join(UPLOADS_DIR, filename);
+    if (fs.existsSync(filePath)) {
+      res.writeHead(200, { 'Content-Type': 'image/png' });
+      fs.createReadStream(filePath).pipe(res);
+      return true;
+    }
+    res.writeHead(404, { 'Content-Type': 'text/plain' });
+    res.end('Fichier introuvable');
+    return true;
+  }
+
   // 2. Réception de l'image recadrée : POST /crop/:token
   if (req.method === 'POST' && url.pathname.startsWith('/crop/')) {
     const token = url.pathname.split('/crop/')[1];
@@ -237,8 +260,29 @@ function handleCropHttp(req, res, client) {
     }
 
     let body = '';
-    req.on('data', chunk => { body += chunk; });
+    let tooLarge = false;
+
+    req.on('data', chunk => {
+      body += chunk;
+      if (body.length > 15 * 1024 * 1024) {
+        tooLarge = true;
+        res.writeHead(413, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Image trop volumineuse' }));
+        req.destroy();
+      }
+    });
+
+    req.on('error', err => {
+      console.error('Erreur réception crop:', err);
+      if (!res.headersSent) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Erreur réseau' }));
+      }
+    });
+
     req.on('end', async () => {
+      if (tooLarge) return;
+
       try {
         const { imageBase64 } = JSON.parse(body);
         if (!imageBase64 || !imageBase64.startsWith('data:image/png;base64,')) {
@@ -249,11 +293,12 @@ function handleCropHttp(req, res, client) {
 
         const buffer = Buffer.from(imageBase64.replace(/^data:image\/png;base64,/, ''), 'base64');
         let bannerUrl = imageBase64;
+        let sentMsg = null;
+
         if (client) {
           try {
             const { AttachmentBuilder } = require('discord.js');
-            const att = new AttachmentBuilder(buffer, { name: `banner_.png` });
-            let sentMsg = null;
+            const att = new AttachmentBuilder(buffer, { name: 'banner_.png' });
             const dmContent = `[Bannière de votre JDR archivée en DM pour conservation permanente]\nTable ID : ${session.campaignId}`;
             if (session.userId) {
               const user = await client.users.fetch(session.userId).catch(() => null);
@@ -268,11 +313,24 @@ function handleCropHttp(req, res, client) {
                 sentMsg = await ownerUser.send({ content: dmContent, files: [att] }).catch(() => null);
               }
             }
-            if (sentMsg && sentMsg.attachments.first()) {
+            if (sentMsg && sentMsg.attachments && sentMsg.attachments.first()) {
               bannerUrl = sentMsg.attachments.first().url;
             }
-          } catch (e) { console.error('Erreur hébergement DM Discord:', e); }
+          } catch (e) {
+            console.error('Erreur hébergement DM Discord:', e);
+          }
         }
+
+        // Sauvegarde locale de secours si le DM Discord n'a pas pu être envoyé
+        if (!sentMsg) {
+          try {
+            const localFileName = `${session.campaignId}.png`;
+            fs.writeFileSync(path.join(UPLOADS_DIR, localFileName), buffer);
+          } catch (fsErr) {
+            console.warn('[CropServer] Impossible d\'écrire dans uploads:', fsErr?.message);
+          }
+        }
+
         updateCampaignConfig(session.guildId, session.campaignId, {
           bannerUrl,
           bannerMessageId: sentMsg ? sentMsg.id : null,
@@ -281,7 +339,11 @@ function handleCropHttp(req, res, client) {
         cropSessions.delete(token);
 
         if (client) {
-          await refreshDashboardMessage(client, session.guildId);
+          try {
+            await refreshDashboardMessage(client, session.guildId);
+          } catch (dashErr) {
+            console.error('Erreur rafraîchissement dashboard après crop:', dashErr);
+          }
         }
 
         res.writeHead(200, { 'Content-Type': 'application/json' });
