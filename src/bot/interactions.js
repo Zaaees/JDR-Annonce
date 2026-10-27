@@ -28,7 +28,8 @@ const {
   getMondayISO,
   getWeekDaysFromMonday,
   formatFullDateFR,
-  formatDayMonthFR
+  formatDayMonthFR,
+  parseTimeInput
 } = require('../utils/dates');
 const {
   getRolePlayers,
@@ -167,6 +168,14 @@ function buildPlayerVotePanel(campaign, userId) {
   const startDateISO = campaign.startDateISO || campaign.weekMondayISO || getMondayISO();
   const weekDays = getRollingDays(startDateISO, 14);
   const selectedSet = getOrInitDraft(campaign, userId);
+  const todayISO = getTodayISO();
+
+  // Nettoie les jours passés de la sélection en cours
+  for (let idx = 0; idx < 14; idx++) {
+    if (weekDays[idx] && weekDays[idx].iso <= todayISO && selectedSet.has(idx)) {
+      selectedSet.delete(idx);
+    }
+  }
 
   // Compteur d'affluence : nombre de joueurs disponibles chaque jour, sur le total attendu.
   // Compte les votes déjà validés des AUTRES joueurs + la sélection en cours de ce joueur.
@@ -185,64 +194,56 @@ function buildPlayerVotePanel(campaign, userId) {
     if (selectedSet.has(idx)) count++;
     return count;
   };
-  const buildDayLabel = (d, idx, isSelected) =>
-    `${isSelected ? '✓ ' : ''}${d.shortLabel} (${availabilityCount(idx)}/${totalPlayers})`;
+  const buildDayLabel = (d, idx, isSelected) => {
+    if (d.iso <= todayISO) {
+      return `${d.shortLabel} (Passé)`;
+    }
+    return `${isSelected ? '✓ ' : ''}${d.shortLabel} (${availabilityCount(idx)}/${totalPlayers})`;
+  };
+
+  const createDayButton = (d, idx) => {
+    const isPast = d.iso <= todayISO;
+    const isSelected = selectedSet.has(idx);
+    return new ButtonBuilder()
+      .setCustomId(`toggle_day:${campaign.id}:${idx}`)
+      .setLabel(buildDayLabel(d, idx, isSelected))
+      .setStyle(isSelected && !isPast ? ButtonStyle.Success : ButtonStyle.Secondary)
+      .setDisabled(isPast);
+  };
 
   // Ligne 1 : Semaine 1 - Lundi à Vendredi (indices 0 à 4)
   const rowDays1 = new ActionRowBuilder().addComponents(
-    weekDays.slice(0, 5).map((d, idx) => {
-      const isSelected = selectedSet.has(idx);
-      return new ButtonBuilder()
-        .setCustomId(`toggle_day:${campaign.id}:${idx}`)
-        .setLabel(buildDayLabel(d, idx, isSelected))
-        .setStyle(isSelected ? ButtonStyle.Success : ButtonStyle.Secondary);
-    })
+    weekDays.slice(0, 5).map((d, idx) => createDayButton(d, idx))
   );
 
   // Ligne 2 : Semaine 1 - Samedi et Dimanche (indices 5 et 6)
   const rowDays2 = new ActionRowBuilder().addComponents(
-    weekDays.slice(5, 7).map((d, offset) => {
-      const idx = 5 + offset;
-      const isSelected = selectedSet.has(idx);
-      return new ButtonBuilder()
-        .setCustomId(`toggle_day:${campaign.id}:${idx}`)
-        .setLabel(buildDayLabel(d, idx, isSelected))
-        .setStyle(isSelected ? ButtonStyle.Success : ButtonStyle.Secondary);
-    })
+    weekDays.slice(5, 7).map((d, offset) => createDayButton(d, 5 + offset))
   );
 
   // Ligne 3 : Semaine 2 - Lundi à Vendredi (indices 7 à 11)
   const rowDays3 = new ActionRowBuilder().addComponents(
-    weekDays.slice(7, 12).map((d, offset) => {
-      const idx = 7 + offset;
-      const isSelected = selectedSet.has(idx);
-      return new ButtonBuilder()
-        .setCustomId(`toggle_day:${campaign.id}:${idx}`)
-        .setLabel(buildDayLabel(d, idx, isSelected))
-        .setStyle(isSelected ? ButtonStyle.Success : ButtonStyle.Secondary);
-    })
+    weekDays.slice(7, 12).map((d, offset) => createDayButton(d, 7 + offset))
   );
 
   // Ligne 4 : Semaine 2 - Samedi et Dimanche (indices 12 et 13)
   const rowDays4 = new ActionRowBuilder().addComponents(
-    weekDays.slice(12, 14).map((d, offset) => {
-      const idx = 12 + offset;
-      const isSelected = selectedSet.has(idx);
-      return new ButtonBuilder()
-        .setCustomId(`toggle_day:${campaign.id}:${idx}`)
-        .setLabel(buildDayLabel(d, idx, isSelected))
-        .setStyle(isSelected ? ButtonStyle.Success : ButtonStyle.Secondary);
-    })
+    weekDays.slice(12, 14).map((d, offset) => createDayButton(d, 12 + offset))
   );
 
   // Ligne 5 : Actions globales ("Tous les jours", "Indisponible", "Valider")
-  const isAllSelected = selectedSet.size === 14;
+  const selectableIndices = weekDays
+    .map((d, idx) => ({ d, idx }))
+    .filter(x => x.d.iso > todayISO)
+    .map(x => x.idx);
+  const isAllSelected = selectableIndices.length > 0 && selectableIndices.every(idx => selectedSet.has(idx));
   const count = selectedSet.size;
   const rowActions = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setCustomId(`toggle_all:${campaign.id}`)
       .setLabel(isAllSelected ? 'Tout décocher' : 'Tous les jours')
-      .setStyle(ButtonStyle.Primary),
+      .setStyle(ButtonStyle.Primary)
+      .setDisabled(selectableIndices.length === 0),
     new ButtonBuilder()
       .setCustomId(`vote_unavailable_ask:${campaign.id}`)
       .setLabel('Indisponible')
@@ -261,12 +262,69 @@ function buildPlayerVotePanel(campaign, userId) {
   };
 }
 
+const TIME_PRESETS = [
+  { value: '20h30', label: '20h30', description: 'Soirée — Classique', emoji: '🌙' },
+  { value: '21h00', label: '21h00', description: 'Soirée — Standard', emoji: '🌙' },
+  { value: '20h00', label: '20h00', description: 'Soirée — Début tôt', emoji: '🌙' },
+  { value: '20h45', label: '20h45', description: 'Soirée', emoji: '🌙' },
+  { value: '21h30', label: '21h30', description: 'Soirée — Début tard', emoji: '🌙' },
+  { value: '19h30', label: '19h30', description: 'Soirée — Très tôt', emoji: '🌙' },
+  { value: '18h00', label: '18h00', description: 'Soirée — 18h', emoji: '🌙' },
+  { value: '14h00', label: '14h00', description: 'Après-midi — Standard week-end', emoji: '☀️' },
+  { value: '14h30', label: '14h30', description: 'Après-midi', emoji: '☀️' },
+  { value: '15h00', label: '15h00', description: 'Milieu d’après-midi', emoji: '☀️' },
+  { value: '10h00', label: '10h00', description: 'Matinée', emoji: '🌅' }
+];
+
+function buildTimeSelectMenu(campaign) {
+  const options = [];
+  const currentTime = campaign.time ? parseTimeInput(campaign.time).label || campaign.time : null;
+  const isCustomTime = Boolean(currentTime && !TIME_PRESETS.some(p => p.value === currentTime));
+
+  if (isCustomTime) {
+    options.push({
+      label: `${currentTime} (Actuelle)`.slice(0, 100),
+      value: currentTime,
+      description: 'Heure personnalisée actuellement définie',
+      emoji: '🕒',
+      default: true
+    });
+  }
+
+  TIME_PRESETS.forEach(p => {
+    options.push({
+      label: p.label,
+      value: p.value,
+      description: p.description,
+      emoji: p.emoji,
+      default: !isCustomTime && currentTime === p.value
+    });
+  });
+
+  options.push({
+    label: 'Autre heure...',
+    value: '__custom__',
+    description: 'Saisir une heure libre manuellement',
+    emoji: '✏️'
+  });
+
+  const placeholder = currentTime
+    ? `🕒 Heure fixée : ${currentTime}`
+    : '🕒 Définir l’heure (presets)...';
+
+  return new StringSelectMenuBuilder()
+    .setCustomId(`mj_set_time_preset:${campaign.id}`)
+    .setPlaceholder(placeholder)
+    .addOptions(options);
+}
+
 /**
  * Panneau strictement réservé au MJ de la table (ou Administrateur).
  */
 function buildMJControlPanel(campaign, allCampaigns = []) {
   const startDateISO = campaign.startDateISO || campaign.weekMondayISO || getMondayISO();
   const weekDays = getRollingDays(startDateISO, 14);
+  const todayISO = getTodayISO();
   const rows = [];
 
   const quickDaySelect = new StringSelectMenuBuilder()
@@ -277,27 +335,33 @@ function buildMJControlPanel(campaign, allCampaigns = []) {
         const conflicting = allCampaigns.find(
           c => c.id !== campaign.id && c.status === 'confirmed' && c.confirmedDateISO === d.iso && campaignsConflict(c, campaign)
         );
+        const isPast = d.iso <= todayISO;
         let label = campaign.time ? `${d.fullLabel} (${campaign.time})` : d.fullLabel;
         if (conflicting) {
           label = `${d.shortLabel} (⛔ Pris par ${conflicting.title})`;
+        } else if (isPast) {
+          label = `${d.shortLabel} (Passé)`;
         }
         return {
           label: label.slice(0, 100),
           value: d.iso,
           default: campaign.status === 'confirmed' && campaign.confirmedDateISO === d.iso,
-          description: conflicting ? `Réservé par ${conflicting.title}`.slice(0, 100) : undefined
+          description: conflicting
+            ? `Réservé par ${conflicting.title}`.slice(0, 100)
+            : (isPast ? 'Jour déjà passé' : undefined)
         };
       })
     );
 
   rows.push(new ActionRowBuilder().addComponents(quickDaySelect));
+  rows.push(new ActionRowBuilder().addComponents(buildTimeSelectMenu(campaign)));
 
   if (campaign.status === 'confirmed') {
     const sessionRow = new ActionRowBuilder().addComponents(
       new ButtonBuilder()
         .setCustomId(`mj_set_time:${campaign.id}`)
-        .setLabel(campaign.time ? `Modifier l’heure (${campaign.time})` : '🕒 Définir l’heure')
-        .setStyle(ButtonStyle.Primary),
+        .setLabel('✏️ Saisie manuelle')
+        .setStyle(ButtonStyle.Secondary),
       new ButtonBuilder()
         .setCustomId(`mj_session_done:${campaign.id}`)
         .setLabel('Session terminée')
@@ -335,6 +399,10 @@ function buildMJControlPanel(campaign, allCampaigns = []) {
         .setLabel('📝 Préparation MJ en cours')
         .setStyle(ButtonStyle.Secondary),
       new ButtonBuilder()
+        .setCustomId(`mj_set_time:${campaign.id}`)
+        .setLabel('✏️ Saisie manuelle')
+        .setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder()
         .setCustomId(`mj_delete:${campaign.id}`)
         .setLabel('Supprimer la table')
         .setStyle(ButtonStyle.Danger)
@@ -351,6 +419,10 @@ function buildMJControlPanel(campaign, allCampaigns = []) {
         .setLabel('⏸️ Mettre en pause')
         .setStyle(ButtonStyle.Secondary),
       new ButtonBuilder()
+        .setCustomId(`mj_set_time:${campaign.id}`)
+        .setLabel('✏️ Saisie manuelle')
+        .setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder()
         .setCustomId(`mj_delete:${campaign.id}`)
         .setLabel('Supprimer la table')
         .setStyle(ButtonStyle.Danger)
@@ -360,37 +432,43 @@ function buildMJControlPanel(campaign, allCampaigns = []) {
     // Statut 'poll' ou 'unavailable'
     const pollRow = new ActionRowBuilder().addComponents(
       new ButtonBuilder()
+        .setCustomId(`mj_set_time:${campaign.id}`)
+        .setLabel('✏️ Saisie manuelle')
+        .setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder()
         .setCustomId(`mj_pause:${campaign.id}`)
         .setLabel('⏸️ Mettre en pause')
         .setStyle(ButtonStyle.Secondary),
       new ButtonBuilder()
         .setCustomId(`mj_prep:${campaign.id}`)
         .setLabel('📝 Préparation MJ en cours')
-        .setStyle(ButtonStyle.Secondary),
+        .setStyle(ButtonStyle.Secondary)
+    );
+    rows.push(pollRow);
+
+    const actionRow2 = new ActionRowBuilder().addComponents(
       new ButtonBuilder()
         .setCustomId(`mj_restart_poll:${campaign.id}`)
         .setLabel('🔄 Réinitialiser le sondage')
         .setStyle(ButtonStyle.Secondary)
     );
-    rows.push(pollRow);
 
     if (campaign.status === 'poll') {
-      const nudgeRow = new ActionRowBuilder().addComponents(
+      actionRow2.addComponents(
         new ButtonBuilder()
           .setCustomId(`mj_nudge:${campaign.id}`)
           .setLabel('🔔 Relancer les retardataires')
           .setStyle(ButtonStyle.Primary)
       );
-      rows.push(nudgeRow);
     }
 
-    const deleteRow = new ActionRowBuilder().addComponents(
+    actionRow2.addComponents(
       new ButtonBuilder()
         .setCustomId(`mj_delete:${campaign.id}`)
         .setLabel('Supprimer la table')
         .setStyle(ButtonStyle.Danger)
     );
-    rows.push(deleteRow);
+    rows.push(actionRow2);
   }
 
   let statusBadge = 'Sondage en cours';
@@ -399,8 +477,11 @@ function buildMJControlPanel(campaign, allCampaigns = []) {
   if (campaign.status === 'prep') statusBadge = 'Préparation MJ en cours';
   if (campaign.status === 'unavailable') statusBadge = 'Joueurs non disponibles';
 
+  const timeDisplay = campaign.time || '21h00 (par défaut)';
+  const dateDisplay = campaign.confirmedDateISO ? ` — 📅 ${formatFullDateFR(campaign.confirmedDateISO)}` : '';
+
   return {
-    content: `**${campaign.title}** — Gestion MJ (Statut : *${statusBadge}*)`,
+    content: `**${campaign.title}** — Gestion MJ (Statut : *${statusBadge}*${dateDisplay} — 🕒 **${timeDisplay}**)`,
     components: rows,
     allowedMentions: { parse: [] }
   };
@@ -891,6 +972,16 @@ async function handleInteraction(client, interaction) {
         return;
       }
 
+      const todayISO = getTodayISO();
+      const startDateISO = campaign.startDateISO || campaign.weekMondayISO || getMondayISO();
+      const weekDays = getRollingDays(startDateISO, 14);
+      if (weekDays[dayIdx] && weekDays[dayIdx].iso <= todayISO) {
+        // Ignorer le clic sur un jour passé
+        const updatedPanel = buildPlayerVotePanel(campaign, interaction.user.id);
+        await interaction.update(updatedPanel);
+        return;
+      }
+
       const selectedSet = getOrInitDraft(campaign, interaction.user.id);
       if (selectedSet.has(dayIdx)) {
         selectedSet.delete(dayIdx);
@@ -913,11 +1004,26 @@ async function handleInteraction(client, interaction) {
         return;
       }
 
+      const todayISO = getTodayISO();
+      const startDateISO = campaign.startDateISO || campaign.weekMondayISO || getMondayISO();
+      const weekDays = getRollingDays(startDateISO, 14);
+      const selectableIndices = weekDays
+        .map((d, idx) => ({ d, idx }))
+        .filter(x => x.d.iso > todayISO)
+        .map(x => x.idx);
+
       const selectedSet = getOrInitDraft(campaign, interaction.user.id);
-      if (selectedSet.size === 14) {
+      // Nettoie d'éventuels jours passés
+      for (const idx of selectedSet) {
+        if (!selectableIndices.includes(idx)) selectedSet.delete(idx);
+      }
+
+      const isAllSelected = selectableIndices.length > 0 && selectableIndices.every(idx => selectedSet.has(idx));
+      if (isAllSelected) {
         selectedSet.clear();
       } else {
-        Array.from({ length: 14 }, (_, i) => i).forEach(i => selectedSet.add(i));
+        selectedSet.clear();
+        selectableIndices.forEach(i => selectedSet.add(i));
       }
 
       const updatedPanel = buildPlayerVotePanel(campaign, interaction.user.id);
@@ -1150,17 +1256,74 @@ async function handleInteraction(client, interaction) {
         `Session fixée pour **${updated.title}** : **${dateStr}${timeInfo}**.`
       );
 
+      const { guild: freshGuild } = getGuildState(guildId);
+      const freshCampaign = freshGuild.campaigns.find(c => c.id === campaignId);
+      const updatedPanel = buildMJControlPanel(freshCampaign, freshGuild.campaigns);
+
       await interaction.editReply({
-        content: `Date fixée au **${dateStr}${timeInfo}**.`,
-        components: []
+        ...updatedPanel,
+        content: `✅ Date fixée au **${dateStr}${timeInfo}** pour **${updated.title}**.\nVous pouvez ajuster l’heure ci-dessous si besoin :`
       });
       });
       return;
     }
 
     // =========================================================================
-    // 5b. DÉFINITION DE L'HEURE PAR LE MJ (OUVERTURE MODAL & VALIDATION)
+    // 5b. DÉFINITION DE L'HEURE PAR LE MJ (MENU PRESETS & MODAL)
     // =========================================================================
+    if (interaction.isStringSelectMenu() && interaction.customId.startsWith('mj_set_time_preset:')) {
+      const campaignId = interaction.customId.split(':')[1];
+      const guildId = interaction.guildId;
+      const { guild: guildData } = getGuildState(guildId);
+      const campaign = guildData.campaigns.find(c => c.id === campaignId);
+
+      if (!campaign || !isUserMJ(interaction, campaign)) {
+        await interaction.reply({ content: 'Action réservée au MJ.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+
+      const selectedValue = interaction.values[0];
+
+      if (selectedValue === '__custom__') {
+        const modal = new ModalBuilder()
+          .setCustomId(`set_time_modal:${campaignId}`)
+          .setTitle(`Heure - ${campaign.title.slice(0, 35)}`);
+
+        const timeInput = new TextInputBuilder()
+          .setCustomId('session_time_input')
+          .setLabel('Heure de début (saisie libre)')
+          .setPlaceholder('ex: 20h15, 18h30, 14h15, après manger...')
+          .setStyle(TextInputStyle.Short)
+          .setValue(campaign.time || '')
+          .setRequired(true)
+          .setMaxLength(40);
+
+        modal.addComponents(new ActionRowBuilder().addComponents(timeInput));
+        await interaction.showModal(modal);
+        return;
+      }
+
+      const parsed = parseTimeInput(selectedValue);
+      const cleanTime = parsed.label || selectedValue;
+
+      updateCampaignConfig(guildId, campaignId, { time: cleanTime });
+      await refreshDashboardMessage(client, guildId);
+
+      const { guild: freshGuild } = getGuildState(guildId);
+      const freshCampaign = freshGuild.campaigns.find(c => c.id === campaignId);
+      const updatedPanel = buildMJControlPanel(freshCampaign, freshGuild.campaigns);
+
+      const dateStr = freshCampaign.confirmedDateISO
+        ? ` pour le ${formatFullDateFR(freshCampaign.confirmedDateISO)}`
+        : '';
+
+      await interaction.update({
+        ...updatedPanel,
+        content: `✅ Heure fixée à **${cleanTime}**${dateStr} (**${freshCampaign.title}**) !\n${updatedPanel.content}`
+      });
+      return;
+    }
+
     if (interaction.isButton() && interaction.customId.startsWith('mj_set_time:')) {
       const campaignId = interaction.customId.split(':')[1];
       const guildId = interaction.guildId;
@@ -1178,8 +1341,8 @@ async function handleInteraction(client, interaction) {
 
       const timeInput = new TextInputBuilder()
         .setCustomId('session_time_input')
-        .setLabel('Heure de début (informatif)')
-        .setPlaceholder('ex: 20h30, 21h00, 14h00, après manger...')
+        .setLabel('Heure de début (saisie libre)')
+        .setPlaceholder('ex: 20h15, 18h30, après manger...')
         .setStyle(TextInputStyle.Short)
         .setValue(campaign.time || '')
         .setRequired(true)
@@ -1202,12 +1365,15 @@ async function handleInteraction(client, interaction) {
       }
 
       const rawTime = interaction.fields.getTextInputValue('session_time_input').trim();
-      updateCampaignConfig(guildId, campaignId, { time: rawTime });
+      const parsed = parseTimeInput(rawTime);
+      const cleanTime = parsed.label || rawTime;
+
+      updateCampaignConfig(guildId, campaignId, { time: cleanTime });
       await refreshDashboardMessage(client, guildId);
 
-      const dateStr = campaign.confirmedDateISO ? formatFullDateFR(campaign.confirmedDateISO) : 'la session';
+      const dateStr = campaign.confirmedDateISO ? ` pour ${formatFullDateFR(campaign.confirmedDateISO)}` : '';
       await interaction.reply({
-        content: `Heure fixée à **${rawTime}** pour ${dateStr} (**${campaign.title}**).\nL'affiche a été mise à jour !`,
+        content: `✅ Heure fixée à **${cleanTime}**${dateStr} (**${campaign.title}**).\nL'affiche et les événements Discord ont été mis à jour !`,
         flags: MessageFlags.Ephemeral
       });
       return;
@@ -1318,7 +1484,7 @@ async function handleInteraction(client, interaction) {
       }
 
       if (action === 'mj_session_done') {
-        const updated = restartCampaignPoll(guildId, campaignId, { nextWeek: true });
+        const updated = restartCampaignPoll(guildId, campaignId, { nextWeek: false });
         await refreshDashboardMessage(client, guildId);
         const startDateISO = updated.startDateISO || updated.weekMondayISO || getMondayISO();
         const weekDays = getRollingDays(startDateISO, 14);

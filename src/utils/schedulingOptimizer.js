@@ -1,6 +1,7 @@
 const {
   getRollingDays,
   getMondayISO,
+  getTodayISO,
   parseISODate
 } = require('./dates');
 
@@ -64,10 +65,13 @@ function getCampaignUnanimousDates(campaign, roleMemberIds = []) {
   const allVoted = activeVoterIds.every(id => Array.isArray(campaign.votes[id]));
   if (!allVoted) return [];
 
+  const todayISO = getTodayISO();
   const days = getCampaignDays(campaign);
   const unanimous = [];
 
   for (let idx = 0; idx < 14; idx++) {
+    if (days[idx] && days[idx].iso <= todayISO) continue;
+
     const isUnanimous = activeVoterIds.every(id =>
       Array.isArray(campaign.votes[id]) && campaign.votes[id].includes(idx)
     );
@@ -88,15 +92,17 @@ function getCampaignUnanimousDates(campaign, roleMemberIds = []) {
  */
 function getCampaignPotentialDates(campaign) {
   const days = getCampaignDays(campaign);
-  if (!campaign || !campaign.votes) return days.map(d => d.iso);
+  const todayISO = getTodayISO();
+  if (!campaign || !campaign.votes) return days.filter(d => d.iso > todayISO).map(d => d.iso);
 
   const voters = Object.keys(campaign.votes).filter(id => Array.isArray(campaign.votes[id]));
   if (voters.length === 0) {
-    return days.map(d => d.iso);
+    return days.filter(d => d.iso > todayISO).map(d => d.iso);
   }
 
   const potential = [];
   for (let idx = 0; idx < 14; idx++) {
+    if (days[idx] && days[idx].iso <= todayISO) continue;
     const worksForAllVoters = voters.every(id => campaign.votes[id].includes(idx));
     if (worksForAllVoters && days[idx]) {
       potential.push(days[idx].iso);

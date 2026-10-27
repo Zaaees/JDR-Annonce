@@ -295,6 +295,21 @@ try {
   assert.ok(ev.end > ev.start && ev.name.includes('MA TABLE'));
   console.log('✅ Conversion Paris -> UTC et construction d\'événement corrects.');
 
+  // =========================================================================
+  console.log('\n--- Test 9 : Préservation et flexibilité de l\'horaire configuré ---');
+  const evAfternoon = buildDesiredEvent({ status: 'confirmed', confirmedDateISO: '2026-07-11', time: '14h00', title: 'TABLE APREM' });
+  assert.strictEqual(evAfternoon.start.toISOString(), '2026-07-11T12:00:00.000Z', '14h00 Paris en été = 12h00 UTC');
+
+  // Test persistance c.time sur restartCampaignPoll et clearSessionDate
+  const { restartCampaignPoll, clearSessionDate } = require('./storage/store');
+  const testTable = createCampaign('guild_test', { title: 'TABLE TEST TIME', mjId: 'mj1', roleId: 'role1', roleName: '@R', time: '20h30' });
+  assert.strictEqual(testTable.time, '20h30');
+  const cleared = clearSessionDate('guild_test', testTable.id);
+  assert.strictEqual(cleared.time, '20h30', 'L\'heure est conservée après retrait de la date');
+  const restarted = restartCampaignPoll('guild_test', testTable.id);
+  assert.strictEqual(restarted.time, '20h30', 'L\'heure est conservée après relance du sondage');
+  console.log('✅ L\'heure configurée persiste pour les prochaines sessions.');
+
   console.log('\n🎉 TOUS LES TESTS SONT PASSÉS AVEC SUCCÈS !');
 } catch (err) {
   console.error('\n❌ ÉCHEC D\'UN TEST :', err);

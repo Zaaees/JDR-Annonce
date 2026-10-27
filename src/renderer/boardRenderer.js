@@ -548,12 +548,41 @@ function drawCampaignCard(ctx, c, index, x, y, w, h = CARD_H, withShadow = true)
       const rowGap = 10;
       const topPadding = 14;
       const colH = (drawerH - topPadding * 2 - rowGap) / 2;
+      const todayISO = getTodayISO();
 
       weekDays.forEach((d, dayIdx) => {
         const weekRow = dayIdx < 7 ? 0 : 1;
         const colIdx = dayIdx % 7;
         const cx = gridX + colIdx * (colW + colGap);
         const cy = drawerY + topPadding + weekRow * (colH + rowGap);
+        const isPast = d.iso <= todayISO;
+
+        if (isPast) {
+          roundRect(ctx, cx, cy, colW, colH, 10);
+          ctx.fillStyle = '#0b0c10';
+          ctx.fill();
+          ctx.strokeStyle = 'rgba(255, 255, 255, 0.05)';
+          ctx.lineWidth = 1;
+          ctx.stroke();
+
+          ctx.fillStyle = 'rgba(255, 255, 255, 0.22)';
+          ctx.font = '800 19px sans-serif';
+          ctx.textAlign = 'center';
+          ctx.fillText(`${d.code} ${d.dayNum}`, cx + colW / 2, cy + 25);
+
+          ctx.strokeStyle = 'rgba(255, 255, 255, 0.05)';
+          ctx.beginPath();
+          ctx.moveTo(cx + 8, cy + 36);
+          ctx.lineTo(cx + colW - 8, cy + 36);
+          ctx.stroke();
+
+          ctx.fillStyle = 'rgba(255, 255, 255, 0.18)';
+          ctx.font = '700 13px sans-serif';
+          ctx.fillText('PASSÉ', cx + colW / 2, cy + 74);
+          ctx.textAlign = 'left';
+          return;
+        }
+
         const availPlayers = players.filter(p => p.voted && p.days.includes(dayIdx));
         const isFull = availPlayers.length === players.length && players.length > 0;
 

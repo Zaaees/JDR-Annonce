@@ -8,11 +8,17 @@ const MONTHS_SHORT = ['Jan', 'Fév', 'Mar', 'Avr', 'Mai', 'Juin', 'Juil', 'Août
 
 /**
  * Retourne le lundi (à 00:00:00) de la semaine courante ou décalée de `weekOffset` semaines.
- * Si aujourd'hui est dimanche, le "lundi de la semaine à venir" commence le lendemain si on démarre un sondage en fin de semaine,
- * ou le lundi de la semaine en cours.
+ * Utilise l'heure de Paris par défaut.
  */
-function getMondayISO(baseDate = new Date(), weekOffset = 0) {
-  const d = new Date(baseDate.getFullYear(), baseDate.getMonth(), baseDate.getDate());
+function getMondayISO(baseDate = null, weekOffset = 0) {
+  let d;
+  if (!baseDate) {
+    d = parseISODate(getTodayISO());
+  } else if (typeof baseDate === 'string') {
+    d = parseISODate(baseDate);
+  } else {
+    d = new Date(baseDate.getFullYear(), baseDate.getMonth(), baseDate.getDate());
+  }
   const day = d.getDay(); // 0 = Dimanche, 1 = Lundi, ...
   const diffToMonday = day === 0 ? -6 : 1 - day;
   d.setDate(d.getDate() + diffToMonday + weekOffset * 7);

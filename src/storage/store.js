@@ -287,9 +287,12 @@ function submitPlayerVote(guildId, campaignId, userId, selectedValues, roleMembe
   }
 
   // Cas 2 : Le joueur a sélectionné un ou plusieurs jours (0..13)
+  const todayISO = getTodayISO();
+  const currentDays = getRollingDays(c.startDateISO || c.weekMondayISO || getMondayISO(), 14);
   const dayIndices = selectedValues
     .map(v => parseInt(v, 10))
-    .filter(n => !Number.isNaN(n) && n >= 0 && n <= 13);
+    .filter(n => !Number.isNaN(n) && n >= 0 && n <= 13)
+    .filter(n => !currentDays[n] || currentDays[n].iso > todayISO);
 
   c.votes[userId] = dayIndices;
 
@@ -413,7 +416,6 @@ function clearSessionDate(guildId, campaignId) {
 
   c.status = 'poll';
   c.confirmedDateISO = null;
-  c.time = null;
   c.failedWeeksCount = 0;
   c.unavailableUntilISO = null;
   saveState(state);
@@ -444,7 +446,6 @@ function restartCampaignPoll(guildId, campaignId, { nextWeek = false } = {}) {
 
   c.status = 'poll';
   c.confirmedDateISO = null;
-  c.time = null;
   c.failedWeeksCount = 0;
   c.unavailableUntilISO = null;
   c.votes = {};
