@@ -38,9 +38,33 @@ const client = new Client({
   ]
 });
 
+const BOOT_TIME = new Date().toISOString();
+const recentLogs = [];
+function logDiag(msg) {
+  const line = `[${new Date().toISOString()}] ${msg}`;
+  console.log(line);
+  recentLogs.push(line);
+  if (recentLogs.length > 50) recentLogs.shift();
+}
+
 // Serveur HTTP requis par Render (héberge aussi l'outil de recadrage interactif /crop/:token)
 const port = process.env.PORT || 10000;
 const server = http.createServer((req, res) => {
+  if (req.url === '/status') {
+    const state = loadState();
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify({
+      bootTime: BOOT_TIME,
+      ready: client.isReady(),
+      user: client.user ? client.user.tag : null,
+      wsStatus: client.ws ? client.ws.status : null,
+      ping: client.ws ? client.ws.ping : null,
+      guildsInCache: client.guilds ? client.guilds.cache.size : 0,
+      guildsInState: Object.keys(state.guilds || {}).length,
+      recentLogs
+    }, null, 2));
+    return;
+  }
   if (handleCropHttp(req, res, client)) {
     return;
   }
@@ -82,23 +106,32 @@ async function registerCommands(appId) {
 }
 
 client.once(Events.ClientReady, async readyClient => {
-  console.log(`Connecté en tant que ${readyClient.user.tag}`);
+  logDiag(`Connecté en tant que ${readyClient.user.tag}`);
   await registerCommands(readyClient.user.id).catch(err =>
-    console.error('Erreur enregistrement commandes:', err)
+    logDiag(`Erreur enregistrement commandes: ${err?.message}`)
   );
 
   // Si Render a redémarré et réinitialisé le disque local, restaure automatiquement l'état depuis Discord
   await autoRecoverGuildsFromDiscord(client);
+  logDiag('Auto-recovery terminé');
 
   // Rafraîchit les dashboards existants
   const state = loadState();
   for (const guildId of Object.keys(state.guilds)) {
-    await refreshDashboardMessage(client, guildId).catch(() => null);
+    await refreshDashboardMessage(client, guildId).catch(err =>
+      logDiag(`Erreur refresh startup (${guildId}): ${err?.message}`)
+    );
   }
+  logDiag('Startup refresh terminé');
 });
 
 client.on(Events.InteractionCreate, async interaction => {
+  logDiag(`Interaction reçue: type=${interaction.type} customId=${interaction.customId || interaction.commandName}`);
   await handleInteraction(client, interaction);
+});
+
+client.on(Events.Error, err => {
+  logDiag(`Client error: ${err?.message}`);
 });
 
 // Si les rôles d'un membre changent (ajout/retrait d'un joueur dans un @Rôle JDR), met à jour le tableau
@@ -116,4 +149,6 @@ client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
   }
 });
 
-client.login(token);
+client.login(token).catch(err => {
+  logDiag(`Erreur login Discord: ${err?.message}`);
+});
