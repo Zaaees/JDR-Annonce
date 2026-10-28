@@ -47,6 +47,28 @@ function logDiag(msg) {
   if (recentLogs.length > 50) recentLogs.shift();
 }
 
+let lastRestProbe = null;
+async function probeDiscordRest() {
+  const start = Date.now();
+  try {
+    const res = await fetch('https://discord.com/api/v10/gateway/bot', {
+      headers: { Authorization: `Bot ${token}` }
+    });
+    const text = await res.text();
+    lastRestProbe = {
+      status: res.status,
+      ms: Date.now() - start,
+      retryAfter: res.headers.get('retry-after'),
+      cfRay: res.headers.get('cf-ray'),
+      bodyPreview: text.slice(0, 300)
+    };
+    logDiag(`Discord REST /gateway/bot -> HTTP ${res.status} (${lastRestProbe.ms}ms)`);
+  } catch (err) {
+    lastRestProbe = { error: err?.message, ms: Date.now() - start };
+    logDiag(`Discord REST probe error: ${err?.message}`);
+  }
+}
+
 // Serveur HTTP requis par Render (héberge aussi l'outil de recadrage interactif /crop/:token)
 const port = process.env.PORT || 10000;
 const server = http.createServer((req, res) => {
@@ -61,6 +83,7 @@ const server = http.createServer((req, res) => {
       ping: client.ws ? client.ws.ping : null,
       guildsInCache: client.guilds ? client.guilds.cache.size : 0,
       guildsInState: Object.keys(state.guilds || {}).length,
+      lastRestProbe,
       recentLogs
     }, null, 2));
     return;
@@ -134,6 +157,16 @@ client.on(Events.Error, err => {
   logDiag(`Client error: ${err?.message}`);
 });
 
+client.on(Events.Debug, info => {
+  if (/429|rate|limit|Heartbeat|Session|Identify|Connecting|Connected|Destroy|Close/i.test(info)) {
+    logDiag(`[WS] ${info}`);
+  }
+});
+
+client.rest.on('rateLimited', info => {
+  logDiag(`[REST 429] route=${info.route} retryAfter=${info.retryAfter}ms global=${info.global}`);
+});
+
 // Si les rôles d'un membre changent (ajout/retrait d'un joueur dans un @Rôle JDR), met à jour le tableau
 client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
   if (oldMember.roles.cache.equals(newMember.roles.cache)) return;
@@ -149,6 +182,7 @@ client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
   }
 });
 
+probeDiscordRest();
 client.login(token).catch(err => {
   logDiag(`Erreur login Discord: ${err?.message}`);
 });
