@@ -52,6 +52,35 @@ function getDraftKey(campaignId, userId) {
   return `${campaignId}:${userId}`;
 }
 
+/**
+ * Récupère une campagne et restaure automatiquement l'état depuis Discord (DM ou PNG)
+ * si le serveur Render vient de redémarrer et a perdu son disque local.
+ * Doit être appelé APRÈS avoir accusé réception de l'interaction (deferReply / deferUpdate)
+ * pour ne jamais dépasser la limite de 3 secondes de Discord.
+ */
+async function ensureCampaignLoaded(client, guildId, campaignId, fallbackMessage = null) {
+  let { guild: guildData } = getGuildState(guildId);
+  let campaign = guildData.campaigns.find(c => c.id === campaignId);
+
+  if (!campaign) {
+    const restored = await restoreBackupFromDiscord(client, guildId);
+    if (restored) {
+      guildData = restored;
+      campaign = guildData.campaigns.find(c => c.id === campaignId);
+    }
+  }
+
+  if (!campaign && fallbackMessage) {
+    const restored = await tryRestoreStateFromMessage(guildId, fallbackMessage);
+    if (restored) {
+      guildData = restored;
+      campaign = guildData.campaigns.find(c => c.id === campaignId);
+    }
+  }
+
+  return { guildData, campaign };
+}
+
 function getOrInitDraft(campaign, userId) {
   const key = getDraftKey(campaign.id, userId);
   if (!draftSelections.has(key)) {
@@ -491,8 +520,10 @@ function buildMJControlPanel(campaign, allCampaigns = []) {
  * Traite le résultat d'un vote joueur (validation des jours ou clic sur "Semaine prochaine")
  */
 async function processVoteSubmission(client, interaction, guildId, initialCampaign, selectedValues) {
-  // Accuse réception immédiatement (Discord impose 3 s) : le traitement réel peut attendre son tour
-  await interaction.deferUpdate();
+  // Accuse réception immédiatement (Discord impose 3 s) si ce n'est pas déjà fait
+  if (!interaction.deferred && !interaction.replied) {
+    await interaction.deferUpdate();
+  }
 
   // File d'attente par serveur : les votes simultanés sont traités l'un après l'autre,
   // chacun voyant l'état à jour laissé par le précédent.
@@ -764,37 +795,20 @@ async function handleInteraction(client, interaction) {
     if (interaction.isButton() && interaction.customId.startsWith('vote_open:')) {
       const campaignId = interaction.customId.split(':')[1];
       const guildId = interaction.guildId;
-      let { guild: guildData } = getGuildState(guildId);
-      let campaign = guildData.campaigns.find(c => c.id === campaignId);
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+      const { campaign } = await ensureCampaignLoaded(client, guildId, campaignId, interaction.message);
 
       if (!campaign) {
-        const restored = await restoreBackupFromDiscord(client, guildId);
-        if (restored) {
-          guildData = restored;
-          campaign = guildData.campaigns.find(c => c.id === campaignId);
-        }
-      }
-
-      if (!campaign && interaction.message) {
-        const restored = await tryRestoreStateFromMessage(guildId, interaction.message);
-        if (restored) {
-          guildData = restored;
-          campaign = guildData.campaigns.find(c => c.id === campaignId);
-        }
-      }
-
-      if (!campaign) {
-        await interaction.reply({
-          content: 'Cette table n’existe plus. Vous pouvez en créer une nouvelle avec `/jdr creer`.',
-          flags: MessageFlags.Ephemeral
+        await interaction.editReply({
+          content: 'Cette table n’existe plus. Vous pouvez en créer une nouvelle avec `/jdr creer`.'
         });
         return;
       }
 
       if (!isUserInRole(interaction, campaign)) {
-        await interaction.reply({
+        await interaction.editReply({
           content: `Seuls les joueurs possédant le rôle <@&${campaign.roleId}> peuvent voter sur cette table.`,
-          flags: MessageFlags.Ephemeral,
           allowedMentions: { parse: [] }
         });
         return;
@@ -803,99 +817,71 @@ async function handleInteraction(client, interaction) {
       if (campaign.status === 'confirmed' && campaign.confirmedDateISO) {
         const dateStr = formatFullDateFR(campaign.confirmedDateISO);
         const timeInfo = campaign.time ? ` à ${campaign.time}` : '';
-        await interaction.reply({
-          content: `La prochaine session pour **${campaign.title}** est déjà fixée au **${dateStr}${timeInfo}**.`,
-          flags: MessageFlags.Ephemeral
+        await interaction.editReply({
+          content: `La prochaine session pour **${campaign.title}** est déjà fixée au **${dateStr}${timeInfo}**.`
         });
         return;
       }
 
       if (campaign.status === 'paused') {
-        await interaction.reply({
-          content: `La table **${campaign.title}** est actuellement en pause. Le MJ préviendra lors de la reprise des sessions !`,
-          flags: MessageFlags.Ephemeral
+        await interaction.editReply({
+          content: `La table **${campaign.title}** est actuellement en pause. Le MJ préviendra lors de la reprise des sessions !`
         });
         return;
       }
 
       if (campaign.status === 'prep') {
-        await interaction.reply({
-          content: `Le MJ est actuellement en **préparation de session** pour **${campaign.title}**. Le sondage sera lancé dès qu'il sera prêt !`,
-          flags: MessageFlags.Ephemeral
+        await interaction.editReply({
+          content: `Le MJ est actuellement en **préparation de session** pour **${campaign.title}**. Le sondage sera lancé dès qu'il sera prêt !`
         });
         return;
       }
 
       if (campaign.status === 'unavailable' && campaign.unavailableUntilISO) {
         const untilStr = formatDayMonthFR(campaign.unavailableUntilISO);
-        await interaction.reply({
-          content: `Les joueurs ne sont pas disponibles pour **${campaign.title}** jusqu'au **${untilStr}**. Le MJ peut relancer le sondage à tout moment via son espace MJ.`,
-          flags: MessageFlags.Ephemeral
+        await interaction.editReply({
+          content: `Les joueurs ne sont pas disponibles pour **${campaign.title}** jusqu'au **${untilStr}**. Le MJ peut relancer le sondage à tout moment via son espace MJ.`
         });
         return;
       }
 
       if (campaign.status !== 'poll') {
-        await interaction.reply({
-          content: `Aucun sondage en cours pour **${campaign.title}**.`,
-          flags: MessageFlags.Ephemeral
+        await interaction.editReply({
+          content: `Aucun sondage en cours pour **${campaign.title}**.`
         });
         return;
       }
 
       draftSelections.delete(getDraftKey(campaign.id, interaction.user.id));
       const playerPanel = buildPlayerVotePanel(campaign, interaction.user.id);
-      await interaction.reply({
-        ...playerPanel,
-        flags: MessageFlags.Ephemeral
-      });
+      await interaction.editReply(playerPanel);
       return;
     }
 
     if (interaction.isButton() && interaction.customId.startsWith('mj_open:')) {
       const campaignId = interaction.customId.split(':')[1];
       const guildId = interaction.guildId;
-      let { guild: guildData } = getGuildState(guildId);
-      let campaign = guildData.campaigns.find(c => c.id === campaignId);
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+      const { guildData, campaign } = await ensureCampaignLoaded(client, guildId, campaignId, interaction.message);
 
       if (!campaign) {
-        const restored = await restoreBackupFromDiscord(client, guildId);
-        if (restored) {
-          guildData = restored;
-          campaign = guildData.campaigns.find(c => c.id === campaignId);
-        }
-      }
-
-      if (!campaign && interaction.message) {
-        const restored = await tryRestoreStateFromMessage(guildId, interaction.message);
-        if (restored) {
-          guildData = restored;
-          campaign = guildData.campaigns.find(c => c.id === campaignId);
-        }
-      }
-
-      if (!campaign) {
-        await interaction.reply({
-          content: 'Cette table n’existe plus. Vous pouvez en créer une nouvelle avec `/jdr creer`.',
-          flags: MessageFlags.Ephemeral
+        await interaction.editReply({
+          content: 'Cette table n’existe plus. Vous pouvez en créer une nouvelle avec `/jdr creer`.'
         });
         return;
       }
 
       if (!isUserMJ(interaction, campaign)) {
-        await interaction.reply({
+        await interaction.editReply({
           content: `Action réservée au MJ de cette table (<@${campaign.mjId}>) ou à un administrateur.`,
-          flags: MessageFlags.Ephemeral,
           allowedMentions: { parse: [] }
         });
         return;
       }
 
       const mjPanel = buildMJControlPanel(campaign, guildData.campaigns);
-      await interaction.reply({
-        ...mjPanel,
-        flags: MessageFlags.Ephemeral
-      });
+      await interaction.editReply(mjPanel);
       return;
     }
 
@@ -905,56 +891,35 @@ async function handleInteraction(client, interaction) {
     if (interaction.isStringSelectMenu() && interaction.customId === 'select_campaign') {
       const guildId = interaction.guildId;
       const campaignId = interaction.values[0];
-      let { guild: guildData } = getGuildState(guildId);
-      let campaign = guildData.campaigns.find(c => c.id === campaignId);
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+      const { campaign } = await ensureCampaignLoaded(client, guildId, campaignId, interaction.message);
 
       if (!campaign) {
-        const restored = await restoreBackupFromDiscord(client, guildId);
-        if (restored) {
-          guildData = restored;
-          campaign = guildData.campaigns.find(c => c.id === campaignId);
-        }
-      }
-
-      if (!campaign && interaction.message) {
-        const restored = await tryRestoreStateFromMessage(guildId, interaction.message);
-        if (restored) {
-          guildData = restored;
-          campaign = guildData.campaigns.find(c => c.id === campaignId);
-        }
-      }
-
-      if (!campaign) {
-        await interaction.reply({
-          content: 'Cette table n’existe plus. Vous pouvez en créer une nouvelle avec `/jdr creer`.',
-          flags: MessageFlags.Ephemeral
+        await interaction.editReply({
+          content: 'Cette table n’existe plus. Vous pouvez en créer une nouvelle avec `/jdr creer`.'
         });
         return;
       }
 
       if (!isUserInRole(interaction, campaign)) {
-        await interaction.reply({
+        await interaction.editReply({
           content: `Seuls les joueurs possédant le rôle <@&${campaign.roleId}> peuvent voter sur cette table.`,
-          flags: MessageFlags.Ephemeral,
           allowedMentions: { parse: [] }
         });
         return;
       }
 
       if (campaign.status !== 'poll') {
-        await interaction.reply({
-          content: `Aucun sondage en cours pour **${campaign.title}**.`,
-          flags: MessageFlags.Ephemeral
+        await interaction.editReply({
+          content: `Aucun sondage en cours pour **${campaign.title}**.`
         });
         return;
       }
 
       draftSelections.delete(getDraftKey(campaign.id, interaction.user.id));
       const playerPanel = buildPlayerVotePanel(campaign, interaction.user.id);
-      await interaction.reply({
-        ...playerPanel,
-        flags: MessageFlags.Ephemeral
-      });
+      await interaction.editReply(playerPanel);
       return;
     }
 
@@ -964,11 +929,12 @@ async function handleInteraction(client, interaction) {
     if (interaction.isButton() && interaction.customId.startsWith('toggle_day:')) {
       const [, campaignId, dayIdxStr] = interaction.customId.split(':');
       const dayIdx = parseInt(dayIdxStr, 10);
-      const { guild: guildData } = getGuildState(interaction.guildId);
-      const campaign = guildData.campaigns.find(c => c.id === campaignId);
+      await interaction.deferUpdate();
+
+      const { campaign } = await ensureCampaignLoaded(client, interaction.guildId, campaignId);
 
       if (!campaign || campaign.status !== 'poll') {
-        await interaction.update({ content: 'Ce sondage n’est plus actif.', components: [] });
+        await interaction.editReply({ content: 'Ce sondage n’est plus actif.', components: [] });
         return;
       }
 
@@ -978,7 +944,7 @@ async function handleInteraction(client, interaction) {
       if (weekDays[dayIdx] && weekDays[dayIdx].iso <= todayISO) {
         // Ignorer le clic sur un jour passé
         const updatedPanel = buildPlayerVotePanel(campaign, interaction.user.id);
-        await interaction.update(updatedPanel);
+        await interaction.editReply(updatedPanel);
         return;
       }
 
@@ -990,17 +956,18 @@ async function handleInteraction(client, interaction) {
       }
 
       const updatedPanel = buildPlayerVotePanel(campaign, interaction.user.id);
-      await interaction.update(updatedPanel);
+      await interaction.editReply(updatedPanel);
       return;
     }
 
     if (interaction.isButton() && interaction.customId.startsWith('toggle_all:')) {
       const [, campaignId] = interaction.customId.split(':');
-      const { guild: guildData } = getGuildState(interaction.guildId);
-      const campaign = guildData.campaigns.find(c => c.id === campaignId);
+      await interaction.deferUpdate();
+
+      const { campaign } = await ensureCampaignLoaded(client, interaction.guildId, campaignId);
 
       if (!campaign || campaign.status !== 'poll') {
-        await interaction.update({ content: 'Ce sondage n’est plus actif.', components: [] });
+        await interaction.editReply({ content: 'Ce sondage n’est plus actif.', components: [] });
         return;
       }
 
@@ -1027,23 +994,24 @@ async function handleInteraction(client, interaction) {
       }
 
       const updatedPanel = buildPlayerVotePanel(campaign, interaction.user.id);
-      await interaction.update(updatedPanel);
+      await interaction.editReply(updatedPanel);
       return;
     }
 
     if (interaction.isButton() && interaction.customId.startsWith('confirm_vote:')) {
       const [, campaignId] = interaction.customId.split(':');
       const guildId = interaction.guildId;
-      const { guild: guildData } = getGuildState(guildId);
-      const campaign = guildData.campaigns.find(c => c.id === campaignId);
+      await interaction.deferUpdate();
+
+      const { campaign } = await ensureCampaignLoaded(client, guildId, campaignId);
 
       if (!campaign || campaign.status !== 'poll') {
-        await interaction.update({ content: 'Ce sondage n’est plus actif.', components: [] });
+        await interaction.editReply({ content: 'Ce sondage n’est plus actif.', components: [] });
         return;
       }
 
       if (!isUserInRole(interaction, campaign)) {
-        await interaction.update({
+        await interaction.editReply({
           content: `Seuls les membres du rôle <@&${campaign.roleId}> ont le droit de voter.`,
           components: [],
           allowedMentions: { parse: [] }
@@ -1065,16 +1033,17 @@ async function handleInteraction(client, interaction) {
       const parts = interaction.customId.split(':');
       const campaignId = parts[1];
       const guildId = interaction.guildId;
-      const { guild: guildData } = getGuildState(guildId);
-      const campaign = guildData.campaigns.find(c => c.id === campaignId);
+      await interaction.deferUpdate();
+
+      const { campaign } = await ensureCampaignLoaded(client, guildId, campaignId);
 
       if (!campaign || campaign.status !== 'poll') {
-        await interaction.update({ content: 'Ce sondage n’est plus actif.', components: [] });
+        await interaction.editReply({ content: 'Ce sondage n’est plus actif.', components: [] });
         return;
       }
 
       if (!isUserInRole(interaction, campaign)) {
-        await interaction.update({
+        await interaction.editReply({
           content: `Seuls les membres du rôle <@&${campaign.roleId}> ont le droit de voter.`,
           components: [],
           allowedMentions: { parse: [] }
@@ -1094,7 +1063,7 @@ async function handleInteraction(client, interaction) {
           .setStyle(ButtonStyle.Secondary)
       );
 
-      await interaction.update({
+      await interaction.editReply({
         content: `⚠️ **Si vous choisissez cela, cela clôturera le sondage pour cette période.**`,
         components: [rowConfirm]
       });
@@ -1104,32 +1073,34 @@ async function handleInteraction(client, interaction) {
     if (interaction.isButton() && interaction.customId.startsWith('vote_unavailable_cancel:')) {
       const [, campaignId] = interaction.customId.split(':');
       const guildId = interaction.guildId;
-      const { guild: guildData } = getGuildState(guildId);
-      const campaign = guildData.campaigns.find(c => c.id === campaignId);
+      await interaction.deferUpdate();
+
+      const { campaign } = await ensureCampaignLoaded(client, guildId, campaignId);
 
       if (!campaign || campaign.status !== 'poll') {
-        await interaction.update({ content: 'Ce sondage n’est plus actif.', components: [] });
+        await interaction.editReply({ content: 'Ce sondage n’est plus actif.', components: [] });
         return;
       }
 
       const playerPanel = buildPlayerVotePanel(campaign, interaction.user.id);
-      await interaction.update(playerPanel);
+      await interaction.editReply(playerPanel);
       return;
     }
 
     if (interaction.isButton() && interaction.customId.startsWith('vote_unavailable_confirm:')) {
       const [, campaignId] = interaction.customId.split(':');
       const guildId = interaction.guildId;
-      const { guild: guildData } = getGuildState(guildId);
-      const campaign = guildData.campaigns.find(c => c.id === campaignId);
+      await interaction.deferUpdate();
+
+      const { campaign } = await ensureCampaignLoaded(client, guildId, campaignId);
 
       if (!campaign || campaign.status !== 'poll') {
-        await interaction.update({ content: 'Ce sondage n’est plus actif.', components: [] });
+        await interaction.editReply({ content: 'Ce sondage n’est plus actif.', components: [] });
         return;
       }
 
       if (!isUserInRole(interaction, campaign)) {
-        await interaction.update({
+        await interaction.editReply({
           content: `Seuls les membres du rôle <@&${campaign.roleId}> ont le droit de voter.`,
           components: [],
           allowedMentions: { parse: [] }
@@ -1146,7 +1117,14 @@ async function handleInteraction(client, interaction) {
     // =========================================================================
     if (interaction.isButton() && interaction.customId === 'open_mj_menu') {
       const guildId = interaction.guildId;
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
       let { guild: guildData } = getGuildState(guildId);
+
+      if (!guildData.campaigns || guildData.campaigns.length === 0) {
+        const restored = await restoreBackupFromDiscord(client, guildId);
+        if (restored) guildData = restored;
+      }
 
       if ((!guildData.campaigns || guildData.campaigns.length === 0) && interaction.message) {
         const restored = await tryRestoreStateFromMessage(guildId, interaction.message);
@@ -1162,19 +1140,15 @@ async function handleInteraction(client, interaction) {
       );
 
       if (mjCampaigns.length === 0) {
-        await interaction.reply({
-          content: 'Seul le MJ d’une table (ou un administrateur) peut accéder à cet espace.',
-          flags: MessageFlags.Ephemeral
+        await interaction.editReply({
+          content: 'Seul le MJ d’une table (ou un administrateur) peut accéder à cet espace.'
         });
         return;
       }
 
       if (mjCampaigns.length === 1) {
         const mjPanel = buildMJControlPanel(mjCampaigns[0], guildData.campaigns);
-        await interaction.reply({
-          ...mjPanel,
-          flags: MessageFlags.Ephemeral
-        });
+        await interaction.editReply(mjPanel);
         return;
       }
 
@@ -1188,9 +1162,8 @@ async function handleInteraction(client, interaction) {
           }))
         );
 
-      await interaction.reply({
-        components: [new ActionRowBuilder().addComponents(selectMjTable)],
-        flags: MessageFlags.Ephemeral
+      await interaction.editReply({
+        components: [new ActionRowBuilder().addComponents(selectMjTable)]
       });
       return;
     }
@@ -1198,16 +1171,17 @@ async function handleInteraction(client, interaction) {
     if (interaction.isStringSelectMenu() && interaction.customId === 'select_mj_campaign') {
       const guildId = interaction.guildId;
       const campaignId = interaction.values[0];
-      const { guild: guildData } = getGuildState(guildId);
-      const campaign = guildData.campaigns.find(c => c.id === campaignId);
+      await interaction.deferUpdate();
+
+      const { guildData, campaign } = await ensureCampaignLoaded(client, guildId, campaignId);
 
       if (!campaign || !isUserMJ(interaction, campaign)) {
-        await interaction.update({ content: 'Action réservée au MJ.', components: [] });
+        await interaction.editReply({ content: 'Action réservée au MJ.', components: [] });
         return;
       }
 
       const mjPanel = buildMJControlPanel(campaign, guildData.campaigns);
-      await interaction.update(mjPanel);
+      await interaction.editReply(mjPanel);
       return;
     }
 
@@ -1218,15 +1192,15 @@ async function handleInteraction(client, interaction) {
       const guildId = interaction.guildId;
       const campaignId = interaction.customId.split(':')[1];
       const selectedDateISO = interaction.values[0];
-      const { guild: guildData } = getGuildState(guildId);
-      const campaign = guildData.campaigns.find(c => c.id === campaignId);
+      await interaction.deferUpdate();
+
+      const { campaign } = await ensureCampaignLoaded(client, guildId, campaignId);
 
       if (!campaign || !isUserMJ(interaction, campaign)) {
-        await interaction.update({ content: 'Action réservée au MJ.', components: [] });
+        await interaction.editReply({ content: 'Action réservée au MJ.', components: [] });
         return;
       }
 
-      await interaction.deferUpdate();
       // Les actions MJ passent par la même file d'attente que les votes (aucune course d'état)
       await runExclusive(`mutation:${guildId}`, async () => {
       const setResult = setManualSessionDate(guildId, campaignId, selectedDateISO);
@@ -1274,27 +1248,22 @@ async function handleInteraction(client, interaction) {
     if (interaction.isStringSelectMenu() && interaction.customId.startsWith('mj_set_time_preset:')) {
       const campaignId = interaction.customId.split(':')[1];
       const guildId = interaction.guildId;
-      const { guild: guildData } = getGuildState(guildId);
-      const campaign = guildData.campaigns.find(c => c.id === campaignId);
-
-      if (!campaign || !isUserMJ(interaction, campaign)) {
-        await interaction.reply({ content: 'Action réservée au MJ.', flags: MessageFlags.Ephemeral });
-        return;
-      }
-
       const selectedValue = interaction.values[0];
 
       if (selectedValue === '__custom__') {
+        const { guild: guildData } = getGuildState(guildId);
+        const campaign = guildData.campaigns.find(c => c.id === campaignId);
+
         const modal = new ModalBuilder()
           .setCustomId(`set_time_modal:${campaignId}`)
-          .setTitle(`Heure - ${campaign.title.slice(0, 35)}`);
+          .setTitle(`Heure - ${(campaign ? campaign.title : 'Table JDR').slice(0, 35)}`);
 
         const timeInput = new TextInputBuilder()
           .setCustomId('session_time_input')
           .setLabel('Heure de début (saisie libre)')
           .setPlaceholder('ex: 20h15, 18h30, 14h15, après manger...')
           .setStyle(TextInputStyle.Short)
-          .setValue(campaign.time || '')
+          .setValue((campaign && campaign.time) ? campaign.time : '')
           .setRequired(true)
           .setMaxLength(40);
 
@@ -1303,23 +1272,35 @@ async function handleInteraction(client, interaction) {
         return;
       }
 
+      // Accuse réception immédiatement avant le rendu PNG et la synchro Discord
+      await interaction.deferUpdate();
+
+      const { campaign } = await ensureCampaignLoaded(client, guildId, campaignId);
+
+      if (!campaign || !isUserMJ(interaction, campaign)) {
+        await interaction.editReply({ content: 'Action réservée au MJ.', components: [] });
+        return;
+      }
+
       const parsed = parseTimeInput(selectedValue);
       const cleanTime = parsed.label || selectedValue;
 
-      updateCampaignConfig(guildId, campaignId, { time: cleanTime });
-      await refreshDashboardMessage(client, guildId);
+      await runExclusive(`mutation:${guildId}`, async () => {
+        updateCampaignConfig(guildId, campaignId, { time: cleanTime });
+        await refreshDashboardMessage(client, guildId);
 
-      const { guild: freshGuild } = getGuildState(guildId);
-      const freshCampaign = freshGuild.campaigns.find(c => c.id === campaignId);
-      const updatedPanel = buildMJControlPanel(freshCampaign, freshGuild.campaigns);
+        const { guild: freshGuild } = getGuildState(guildId);
+        const freshCampaign = freshGuild.campaigns.find(c => c.id === campaignId);
+        const updatedPanel = buildMJControlPanel(freshCampaign, freshGuild.campaigns);
 
-      const dateStr = freshCampaign.confirmedDateISO
-        ? ` pour le ${formatFullDateFR(freshCampaign.confirmedDateISO)}`
-        : '';
+        const dateStr = freshCampaign.confirmedDateISO
+          ? ` pour le ${formatFullDateFR(freshCampaign.confirmedDateISO)}`
+          : '';
 
-      await interaction.update({
-        ...updatedPanel,
-        content: `✅ Heure fixée à **${cleanTime}**${dateStr} (**${freshCampaign.title}**) !\n${updatedPanel.content}`
+        await interaction.editReply({
+          ...updatedPanel,
+          content: `✅ Heure fixée à **${cleanTime}**${dateStr} (**${freshCampaign.title}**) !\n${updatedPanel.content}`
+        });
       });
       return;
     }
@@ -1330,21 +1311,21 @@ async function handleInteraction(client, interaction) {
       const { guild: guildData } = getGuildState(guildId);
       const campaign = guildData.campaigns.find(c => c.id === campaignId);
 
-      if (!campaign || !isUserMJ(interaction, campaign)) {
+      if (campaign && !isUserMJ(interaction, campaign)) {
         await interaction.reply({ content: 'Action réservée au MJ.', flags: MessageFlags.Ephemeral });
         return;
       }
 
       const modal = new ModalBuilder()
         .setCustomId(`set_time_modal:${campaignId}`)
-        .setTitle(`Heure - ${campaign.title.slice(0, 35)}`);
+        .setTitle(`Heure - ${(campaign ? campaign.title : 'Table JDR').slice(0, 35)}`);
 
       const timeInput = new TextInputBuilder()
         .setCustomId('session_time_input')
         .setLabel('Heure de début (saisie libre)')
         .setPlaceholder('ex: 20h15, 18h30, après manger...')
         .setStyle(TextInputStyle.Short)
-        .setValue(campaign.time || '')
+        .setValue((campaign && campaign.time) ? campaign.time : '')
         .setRequired(true)
         .setMaxLength(40);
 
@@ -1356,11 +1337,12 @@ async function handleInteraction(client, interaction) {
     if (interaction.isModalSubmit() && interaction.customId.startsWith('set_time_modal:')) {
       const campaignId = interaction.customId.split(':')[1];
       const guildId = interaction.guildId;
-      const { guild: guildData } = getGuildState(guildId);
-      const campaign = guildData.campaigns.find(c => c.id === campaignId);
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+      const { campaign } = await ensureCampaignLoaded(client, guildId, campaignId);
 
       if (!campaign || !isUserMJ(interaction, campaign)) {
-        await interaction.reply({ content: 'Action réservée au MJ.', flags: MessageFlags.Ephemeral });
+        await interaction.editReply({ content: 'Action réservée au MJ.' });
         return;
       }
 
@@ -1368,13 +1350,14 @@ async function handleInteraction(client, interaction) {
       const parsed = parseTimeInput(rawTime);
       const cleanTime = parsed.label || rawTime;
 
-      updateCampaignConfig(guildId, campaignId, { time: cleanTime });
-      await refreshDashboardMessage(client, guildId);
+      await runExclusive(`mutation:${guildId}`, async () => {
+        updateCampaignConfig(guildId, campaignId, { time: cleanTime });
+        await refreshDashboardMessage(client, guildId);
 
-      const dateStr = campaign.confirmedDateISO ? ` pour ${formatFullDateFR(campaign.confirmedDateISO)}` : '';
-      await interaction.reply({
-        content: `✅ Heure fixée à **${cleanTime}**${dateStr} (**${campaign.title}**).\nL'affiche et les événements Discord ont été mis à jour !`,
-        flags: MessageFlags.Ephemeral
+        const dateStr = campaign.confirmedDateISO ? ` pour ${formatFullDateFR(campaign.confirmedDateISO)}` : '';
+        await interaction.editReply({
+          content: `✅ Heure fixée à **${cleanTime}**${dateStr} (**${campaign.title}**).\nL'affiche et les événements Discord ont été mis à jour !`
+        });
       });
       return;
     }
@@ -1384,18 +1367,23 @@ async function handleInteraction(client, interaction) {
       if (!campaignId) return;
 
       const guildId = interaction.guildId;
-      const { guild: guildData } = getGuildState(guildId);
-      const campaign = guildData.campaigns.find(c => c.id === campaignId);
+      // Accuse réception immédiatement pour éviter "L'application ne répond pas"
+      await interaction.deferUpdate();
 
-      if (!campaign || !isUserMJ(interaction, campaign)) {
-        await interaction.reply({
-          content: 'Action réservée au MJ de cette table.',
-          flags: MessageFlags.Ephemeral
-        });
+      const { campaign: loadedCampaign } = await ensureCampaignLoaded(client, guildId, campaignId);
+
+      if (!loadedCampaign) {
+        await interaction.editReply({ content: 'Cette table n’existe plus.', components: [] });
         return;
       }
 
-      await interaction.deferUpdate();
+      if (!isUserMJ(interaction, loadedCampaign)) {
+        await interaction.editReply({
+          content: 'Action réservée au MJ de cette table.',
+          components: []
+        });
+        return;
+      }
 
       // Toutes les actions MJ sont sérialisées avec les votes pour ce serveur
       await runExclusive(`mutation:${guildId}`, async () => {
@@ -1421,7 +1409,13 @@ async function handleInteraction(client, interaction) {
         } else if (nudge.status === 'NO_CHANNEL') {
           message = 'Le salon du tableau n’est pas configuré ou est inaccessible.';
         }
-        await interaction.editReply({ content: message, components: [] });
+        const { guild: freshGuild } = getGuildState(guildId);
+        const freshCampaign = freshGuild.campaigns.find(c => c.id === campaignId);
+        const updatedPanel = buildMJControlPanel(freshCampaign, freshGuild.campaigns);
+        await interaction.editReply({
+          ...updatedPanel,
+          content: `${message}\n${updatedPanel.content}`
+        });
         return;
       }
 
@@ -1429,9 +1423,11 @@ async function handleInteraction(client, interaction) {
         await deleteCampaignPing(client, guildId, campaign);
         const updated = setCampaignStatus(guildId, campaignId, 'paused');
         await refreshDashboardMessage(client, guildId);
+        const { guild: freshGuild } = getGuildState(guildId);
+        const updatedPanel = buildMJControlPanel(updated, freshGuild.campaigns);
         await interaction.editReply({
-          content: `Table **${updated.title}** mise en pause. Le sondage est arrêté et l'affiche indique la pause.`,
-          components: []
+          ...updatedPanel,
+          content: `⏸️ Table **${updated.title}** mise en pause. Le sondage est arrêté et l'affiche indique la pause.\n${updatedPanel.content}`
         });
         return;
       }
@@ -1440,9 +1436,11 @@ async function handleInteraction(client, interaction) {
         await deleteCampaignPing(client, guildId, campaign);
         const updated = setCampaignStatus(guildId, campaignId, 'prep');
         await refreshDashboardMessage(client, guildId);
+        const { guild: freshGuild } = getGuildState(guildId);
+        const updatedPanel = buildMJControlPanel(updated, freshGuild.campaigns);
         await interaction.editReply({
-          content: `Table **${updated.title}** passée en **Préparation MJ en cours**. L'affiche a été mise à jour.`,
-          components: []
+          ...updatedPanel,
+          content: `📝 Table **${updated.title}** passée en **Préparation MJ en cours**. L'affiche a été mise à jour.\n${updatedPanel.content}`
         });
         return;
       }
@@ -1458,9 +1456,12 @@ async function handleInteraction(client, interaction) {
           updated,
           `Sondage de disponibilité ouvert pour **${updated.title}** (du ${weekDays[0].fullLabel} au ${weekDays[13].fullLabel}).`
         );
+        const { guild: freshGuild } = getGuildState(guildId);
+        const freshCampaign = freshGuild.campaigns.find(c => c.id === campaignId) || updated;
+        const updatedPanel = buildMJControlPanel(freshCampaign, freshGuild.campaigns);
         await interaction.editReply({
-          content: `Sondage lancé pour **${updated.title}** (du ${weekDays[0].fullLabel} au ${weekDays[13].fullLabel}).`,
-          components: []
+          ...updatedPanel,
+          content: `▶️ Sondage lancé pour **${updated.title}** (du ${weekDays[0].fullLabel} au ${weekDays[13].fullLabel}).\n${updatedPanel.content}`
         });
         return;
       }
@@ -1476,9 +1477,12 @@ async function handleInteraction(client, interaction) {
           updated,
           `Nouveau sondage de disponibilité pour **${updated.title}** (du ${weekDays[0].fullLabel} au ${weekDays[13].fullLabel}).`
         );
+        const { guild: freshGuild } = getGuildState(guildId);
+        const freshCampaign = freshGuild.campaigns.find(c => c.id === campaignId) || updated;
+        const updatedPanel = buildMJControlPanel(freshCampaign, freshGuild.campaigns);
         await interaction.editReply({
-          content: `Sondage relancé pour **${updated.title}** (du ${weekDays[0].fullLabel} au ${weekDays[13].fullLabel}).`,
-          components: []
+          ...updatedPanel,
+          content: `🔄 Sondage relancé pour **${updated.title}** (du ${weekDays[0].fullLabel} au ${weekDays[13].fullLabel}).\n${updatedPanel.content}`
         });
         return;
       }
@@ -1494,9 +1498,12 @@ async function handleInteraction(client, interaction) {
           updated,
           `Nouveau sondage de disponibilité pour **${updated.title}** (du ${weekDays[0].fullLabel} au ${weekDays[13].fullLabel}).`
         );
+        const { guild: freshGuild } = getGuildState(guildId);
+        const freshCampaign = freshGuild.campaigns.find(c => c.id === campaignId) || updated;
+        const updatedPanel = buildMJControlPanel(freshCampaign, freshGuild.campaigns);
         await interaction.editReply({
-          content: `Nouveau sondage lancé pour la période du **${weekDays[0].fullLabel}** au **${weekDays[13].fullLabel}**.`,
-          components: []
+          ...updatedPanel,
+          content: `✅ Session terminée ! Nouveau sondage lancé du **${weekDays[0].fullLabel}** au **${weekDays[13].fullLabel}**.\n${updatedPanel.content}`
         });
         return;
       }
@@ -1505,9 +1512,12 @@ async function handleInteraction(client, interaction) {
         await deleteCampaignPing(client, guildId, campaign);
         const updated = clearSessionDate(guildId, campaignId);
         await refreshDashboardMessage(client, guildId);
+        const { guild: freshGuild } = getGuildState(guildId);
+        const freshCampaign = freshGuild.campaigns.find(c => c.id === campaignId) || updated;
+        const updatedPanel = buildMJControlPanel(freshCampaign, freshGuild.campaigns);
         await interaction.editReply({
-          content: `Date retirée pour **${updated.title}**.`,
-          components: []
+          ...updatedPanel,
+          content: `🗑️ Date retirée pour **${updated.title}**. Le sondage est de nouveau ouvert.\n${updatedPanel.content}`
         });
         return;
       }
@@ -1531,6 +1541,11 @@ async function handleInteraction(client, interaction) {
       await interaction.reply({
         content: 'Une erreur est survenue.',
         flags: MessageFlags.Ephemeral
+      }).catch(() => null);
+    } else if (interaction.deferred && !interaction.replied) {
+      await interaction.editReply({
+        content: 'Une erreur est survenue lors du traitement.',
+        components: []
       }).catch(() => null);
     }
   }

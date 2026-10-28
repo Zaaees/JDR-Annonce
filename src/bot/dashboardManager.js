@@ -27,13 +27,23 @@ const { syncGuildEvents } = require('./scheduledEvents');
 // Délai minimum entre deux relances des retardataires pour une même table (anti-spam)
 const NUDGE_COOLDOWN_MS = 6 * 60 * 60 * 1000;
 
+// Cache en mémoire des membres par serveur pour éviter un fetch lourd à chaque interaction (TTL 2 min)
+const guildMembersCacheTs = new Map();
+const MEMBERS_CACHE_TTL_MS = 2 * 60 * 1000;
+
 /**
  * Récupère tous les membres humains possédant le @Rôle Discord d'une campagne.
  */
 async function getRolePlayers(discordGuild, campaign) {
   try {
-    await discordGuild.roles.fetch();
-    await discordGuild.members.fetch();
+    if (discordGuild.roles.cache.size === 0) {
+      await discordGuild.roles.fetch();
+    }
+    const lastFetch = guildMembersCacheTs.get(discordGuild.id) || 0;
+    if (Date.now() - lastFetch > MEMBERS_CACHE_TTL_MS || discordGuild.members.cache.size <= 1) {
+      await discordGuild.members.fetch();
+      guildMembersCacheTs.set(discordGuild.id, Date.now());
+    }
   } catch {
     // Utilise le cache existant si rate-limited
   }
@@ -281,11 +291,10 @@ async function refreshDashboardMessageUnsafe(client, guildId) {
   // avant la sauvegarde, pour que les identifiants d'événements soient inclus dans le backup.
   await syncGuildEvents(client, guildId);
 
-  // Sauvegarde permanente sur Discord (#jdr-donnees) pour survivre aux redémarrages de Render
-  await saveBackupToDiscord(client, guildId).catch(() => null);
-
-  // Nettoie tout message obsolète dans le salon
-  await cleanupObsoleteChannelMessages(client, guildId, channel).catch(() => null);
+  // Sauvegarde permanente sur Discord (#jdr-donnees / DM) et nettoyage en tâche de fond
+  // pour ne pas ralentir la réponse aux interactions utilisateur.
+  saveBackupToDiscord(client, guildId).catch(() => null);
+  cleanupObsoleteChannelMessages(client, guildId, channel).catch(() => null);
 
   return targetMsg;
 }

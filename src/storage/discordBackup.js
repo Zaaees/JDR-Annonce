@@ -6,14 +6,21 @@ const {
   restoreGuildState
 } = require('./store');
 
+let cachedOwnerUser = null;
+const checkedOldChannelGuilds = new Set();
+
 /**
  * Récupère l'utilisateur Discord propriétaire de l'application/bot.
  */
 async function getBotOwnerUser(client) {
+  if (cachedOwnerUser) return cachedOwnerUser;
   try {
     if (process.env.OWNER_ID) {
       const u = await client.users.fetch(process.env.OWNER_ID).catch(() => null);
-      if (u) return u;
+      if (u) {
+        cachedOwnerUser = u;
+        return u;
+      }
     }
 
     const app = await client.application.fetch().catch(() => null);
@@ -22,16 +29,21 @@ async function getBotOwnerUser(client) {
     // Si l'application appartient à une Team
     if (app.owner.ownerId || app.owner.ownerUserId) {
       const ownerId = app.owner.ownerId || app.owner.ownerUserId;
-      return await client.users.fetch(ownerId).catch(() => null);
+      const u = await client.users.fetch(ownerId).catch(() => null);
+      if (u) cachedOwnerUser = u;
+      return u;
     }
     if (app.owner.members && app.owner.members.size > 0) {
       const firstMember = app.owner.members.first();
+      if (firstMember?.user) cachedOwnerUser = firstMember.user;
       return firstMember?.user || null;
     }
 
     // Si c'est un compte développeur individuel
     if (app.owner.id) {
-      return await client.users.fetch(app.owner.id).catch(() => null);
+      const u = await client.users.fetch(app.owner.id).catch(() => null);
+      if (u) cachedOwnerUser = u;
+      return u;
     }
   } catch (err) {
     console.error('[Backup] Erreur détection propriétaire du bot:', err?.message);
@@ -43,6 +55,8 @@ async function getBotOwnerUser(client) {
  * Supprime le salon #jdr-donnees sur le serveur s'il existait pour laisser le serveur 100% propre.
  */
 async function cleanupOldBackupChannel(discordGuild) {
+  if (!discordGuild || checkedOldChannelGuilds.has(discordGuild.id)) return;
+  checkedOldChannelGuilds.add(discordGuild.id);
   try {
     const channels = await discordGuild.channels.fetch().catch(() => null);
     if (!channels) return;

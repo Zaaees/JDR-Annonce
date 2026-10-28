@@ -54,6 +54,14 @@ server.listen(port, '0.0.0.0', () => {
   console.log(`Serveur HTTP actif sur le port ${port}`);
 });
 
+// Auto-ping toutes les 10 minutes sur Render pour éviter la mise en veille (cold start > 3s sur Discord)
+const externalUrl = (process.env.RENDER_EXTERNAL_URL || process.env.APP_URL || '').replace(/\/+$/, '');
+if (externalUrl) {
+  setInterval(() => {
+    fetch(`${externalUrl}/health`).catch(() => null);
+  }, 10 * 60 * 1000).unref();
+}
+
 async function registerCommands(appId) {
   const rest = new REST({ version: '10' }).setToken(token);
   const commands = getSlashCommands();
