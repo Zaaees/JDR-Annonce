@@ -182,7 +182,26 @@ client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
   }
 });
 
-probeDiscordRest();
-client.login(token).catch(err => {
-  logDiag(`Erreur login Discord: ${err?.message}`);
-});
+async function loginWithRetry() {
+  await probeDiscordRest();
+  try {
+    await client.login(token);
+  } catch (err) {
+    logDiag(`Erreur login Discord: ${err?.message} — nouvelle tentative dans 2 min`);
+    setTimeout(loginWithRetry, 2 * 60 * 1000).unref();
+  }
+}
+
+// Si au bout de 2 minutes le client n'est toujours pas connecté (ex: blocage 429 Cloudflare), on relance
+setInterval(async () => {
+  if (!client.isReady()) {
+    await probeDiscordRest();
+    if (lastRestProbe && lastRestProbe.status === 200 && !client.isReady()) {
+      logDiag('API Discord de nouveau accessible (HTTP 200) -> reconnexion du bot...');
+      client.destroy().catch(() => null);
+      client.login(token).catch(err => logDiag(`Erreur relance login: ${err?.message}`));
+    }
+  }
+}, 2 * 60 * 1000).unref();
+
+loginWithRetry();

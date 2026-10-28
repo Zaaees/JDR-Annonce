@@ -2,6 +2,7 @@ services:
   - type: web
     name: jdr-annonce-bot
     runtime: node
+    region: ohio
     plan: free
     buildCommand: npm install
     startCommand: npm start
