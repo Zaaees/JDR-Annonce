@@ -4,6 +4,7 @@ const {
   getTodayISO,
   parseISODate
 } = require('./dates');
+const { getCommonHours } = require('./sessionHours');
 
 /**
  * Retourne l'ensemble des participants connus d'une table (joueurs du @Rôle + MJ).
@@ -54,12 +55,19 @@ function getCampaignDays(campaign) {
  */
 function getCampaignUnanimousDates(campaign, roleMemberIds = []) {
   if (!campaign || !campaign.votes) return [];
-
   const activeVoterIds = roleMemberIds && roleMemberIds.length > 0
     ? roleMemberIds
     : Object.keys(campaign.votes);
+  // Un jour commun ne compte que si les joueurs ont aussi au moins 3h communes
+  if (!getCommonHours(campaign.voteHours, activeVoterIds)) return [];
+  return getUnanimousDaysIgnoringHours(campaign, activeVoterIds);
+}
 
-  if (activeVoterIds.length === 0) return [];
+/**
+ * Jours où 100% des joueurs attendus sont disponibles, sans tenir compte des plages horaires.
+ */
+function getUnanimousDaysIgnoringHours(campaign, activeVoterIds) {
+  if (!campaign || !campaign.votes || activeVoterIds.length === 0) return [];
 
   // Vérifie si 100% des joueurs attendus ont voté
   const allVoted = activeVoterIds.every(id => Array.isArray(campaign.votes[id]));
@@ -99,6 +107,8 @@ function getCampaignPotentialDates(campaign) {
   if (voters.length === 0) {
     return days.filter(d => d.iso > todayISO).map(d => d.iso);
   }
+  // Les votants actuels n'ont déjà plus 3h en commun : aucun jour ne pourra être retenu
+  if (!getCommonHours(campaign.voteHours, voters)) return [];
 
   const potential = [];
   for (let idx = 0; idx < 14; idx++) {
@@ -218,6 +228,7 @@ function findAlternativeDateForConfirmedCampaign(
  * @returns {Object} Résultat :
  *  - { action: 'WAITING_VOTES' }
  *  - { action: 'NO_COMMON_DAYS' }
+ *  - { action: 'NO_COMMON_HOURS' } (jour commun, mais moins de 3h communes entre les joueurs)
  *  - { action: 'CONFIRM', confirmedDateISO }
  *  - { action: 'CONFIRM_WITH_SWAP', confirmedDateISO, swappedCampaign, swappedOldDateISO, swappedNewDateISO }
  *  - { action: 'CONFLICT_BLOCKED', conflictingCampaignNames }
@@ -243,7 +254,9 @@ function resolveCampaignSchedule(allCampaigns, targetCampaignId, roleMemberIds =
 
   const unanimousDates = getCampaignUnanimousDates(target, roleMemberIds);
   if (unanimousDates.length === 0) {
-    return { action: 'NO_COMMON_DAYS' };
+    // Distingue "aucun jour commun" de "jour commun mais pas 3h communes"
+    const daysOnly = getUnanimousDaysIgnoringHours(target, activeVoterIds);
+    return { action: daysOnly.length > 0 ? 'NO_COMMON_HOURS' : 'NO_COMMON_DAYS' };
   }
 
   // Dictionnaire des dates déjà occupées par des campagnes confirmées EN CONFLIT avec la cible

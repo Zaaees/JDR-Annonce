@@ -310,6 +310,98 @@ try {
   assert.strictEqual(restarted.time, '20h30', 'L\'heure est conservée après relance du sondage');
   console.log('✅ L\'heure configurée persiste pour les prochaines sessions.');
 
+  // =========================================================================
+  // TEST 10 : Plages horaires des joueurs (fenêtres coulissantes de 3h)
+  // Utilise des jours de la semaine 2 (indices 9 et 10) : toujours dans le futur.
+  // =========================================================================
+  console.log('\n--- Test 10 : Plages horaires « Dispo dès / Jusqu\'à » ---');
+  const {
+    timeLabelToMinutes,
+    minutesToTimeLabel,
+    isValidHoursRange,
+    getCommonHours,
+    pickSessionStart
+  } = require('./utils/sessionHours');
+
+  // Conversions (01h00 = fin de soirée, comptée après minuit)
+  assert.strictEqual(timeLabelToMinutes('19h30'), 19 * 60 + 30);
+  assert.strictEqual(minutesToTimeLabel(24 * 60 + 60), '01h00');
+  assert.strictEqual(minutesToTimeLabel(24 * 60), '00h00');
+
+  // Validité d'une plage : au moins 3h
+  assert.strictEqual(isValidHoursRange({ from: 20 * 60, to: 23 * 60 }), true);
+  assert.strictEqual(isValidHoursRange({ from: 21 * 60, to: 23 * 60 }), false, 'Moins de 3h');
+  assert.strictEqual(isValidHoursRange(null), false);
+
+  // Intersection des plages
+  const hrs = {
+    p1: { from: 19 * 60, to: 23 * 60 + 30 },
+    p2: { from: 20 * 60, to: 25 * 60 }
+  };
+  assert.deepStrictEqual(getCommonHours(hrs, ['p1', 'p2']), { from: 20 * 60, to: 23 * 60 + 30 });
+  assert.strictEqual(
+    getCommonHours({ p1: { from: 18 * 60, to: 21 * 60 }, p2: { from: 21 * 60, to: 24 * 60 } }, ['p1', 'p2']),
+    null,
+    'Aucun chevauchement de 3h'
+  );
+  // Vote sans plage (ancien vote) = disponible toute la plage 14h-01h
+  assert.deepStrictEqual(getCommonHours({ p1: { from: 20 * 60, to: 23 * 60 } }, ['p1', 'legacy']), { from: 20 * 60, to: 23 * 60 });
+  assert.deepStrictEqual(getCommonHours(undefined, ['legacy']), { from: 14 * 60, to: 25 * 60 });
+
+  // Choix de l'heure de début : heure du MJ si elle tient, sinon le début commun
+  const common = { from: 20 * 60, to: 23 * 60 + 30 };
+  assert.strictEqual(pickSessionStart(common, '20h30'), '20h30');
+  assert.strictEqual(pickSessionStart(common, '21h00'), '20h30', '21h + 3h dépasse 23h30 : on recale au plus tard possible');
+  assert.strictEqual(pickSessionStart(common, '18h00'), '20h00', 'Trop tôt : début commun');
+  assert.strictEqual(pickSessionStart(common, null), '20h00');
+  assert.strictEqual(pickSessionStart({ from: 22 * 60, to: 25 * 60 }, '22h00'), '22h00');
+  console.log('✅ Calcul des plages communes et de l\'heure de début correct.');
+
+  // Intégration : verrouillage avec heure calculée
+  resetTestState(guildId);
+  const hrsTable = createCampaign(guildId, { title: 'TABLE HORAIRES', mjId: 'mj_h', roleId: 'role_h', time: '18h00' });
+  const hMembers = ['h1', 'h2'];
+  const wedW2 = rollingDays[9].iso;
+  submitPlayerVote(guildId, hrsTable.id, 'h1', ['9', '10'], hMembers, { from: 19 * 60, to: 23 * 60 + 30 });
+  const resHrs = submitPlayerVote(guildId, hrsTable.id, 'h2', ['9'], hMembers, { from: 20 * 60, to: 25 * 60 });
+  assert.strictEqual(resHrs.event, 'AUTO_CONFIRMED');
+  assert.strictEqual(resHrs.confirmedDateISO, wedW2);
+  assert.strictEqual(resHrs.campaign.time, '20h00', 'Heure MJ (18h) hors plage commune : début commun 20h00');
+  const savedGuild = loadState().guilds[guildId];
+  assert.deepStrictEqual(savedGuild.playerHours.h2, { from: 20 * 60, to: 25 * 60 }, 'Dernière plage mémorisée pour préremplir');
+  // Relance : l'heure habituelle du MJ revient
+  const restartedHrs = restartCampaignPoll(guildId, hrsTable.id);
+  assert.strictEqual(restartedHrs.time, '18h00', 'L\'heure du MJ est restaurée après la session');
+  assert.deepStrictEqual(restartedHrs.voteHours, {}, 'Les plages sont remises à zéro');
+  console.log('✅ Session verrouillée à l\'heure commune, heure du MJ restaurée ensuite.');
+
+  // Anciens votes sans plage : l'heure (même absente) n'est pas modifiée
+  resetTestState(guildId);
+  const legacyTable = createCampaign(guildId, { title: 'TABLE ANCIENS VOTES', mjId: 'mj_l', roleId: 'role_l' });
+  submitPlayerVote(guildId, legacyTable.id, 'l1', ['9'], ['l1', 'l2']);
+  const resLegacy = submitPlayerVote(guildId, legacyTable.id, 'l2', ['9'], ['l1', 'l2']);
+  assert.strictEqual(resLegacy.event, 'AUTO_CONFIRMED');
+  assert.strictEqual(resLegacy.campaign.time, null, 'Sans plage joueur, le bot ne fixe pas d\'heure arbitraire');
+  console.log('✅ Votes sans plage horaire : heure inchangée.');
+
+  // Jour commun mais pas 3h communes -> report avec motif explicite
+  resetTestState(guildId);
+  const noHrs = createCampaign(guildId, { title: 'TABLE SANS CRENEAU', mjId: 'mj_n', roleId: 'role_n' });
+  submitPlayerVote(guildId, noHrs.id, 'n1', ['9'], ['n1', 'n2'], { from: 18 * 60, to: 21 * 60 });
+  const resNoHrs = submitPlayerVote(guildId, noHrs.id, 'n2', ['9'], ['n1', 'n2'], { from: 21 * 60, to: 24 * 60 });
+  assert.strictEqual(resNoHrs.event, 'SHIFTED_NEXT_WEEK');
+  assert.strictEqual(resNoHrs.conflictReason, 'NO_COMMON_HOURS');
+  console.log('✅ Pas de créneau de 3h commun : report avec motif « NO_COMMON_HOURS ».');
+
+  // Ni jour commun ni heures communes -> motif « jours » classique (pas NO_COMMON_HOURS)
+  resetTestState(guildId);
+  const noBoth = createCampaign(guildId, { title: 'TABLE RIEN', mjId: 'mj_r', roleId: 'role_r' });
+  submitPlayerVote(guildId, noBoth.id, 'r1', ['9'], ['r1', 'r2'], { from: 18 * 60, to: 21 * 60 });
+  const resNoBoth = submitPlayerVote(guildId, noBoth.id, 'r2', ['10'], ['r1', 'r2'], { from: 21 * 60, to: 24 * 60 });
+  assert.strictEqual(resNoBoth.event, 'SHIFTED_NEXT_WEEK');
+  assert.notStrictEqual(resNoBoth.conflictReason, 'NO_COMMON_HOURS');
+  console.log('✅ Sans jour commun, le motif reste celui des jours.');
+
   console.log('\n🎉 TOUS LES TESTS SONT PASSÉS AVEC SUCCÈS !');
 } catch (err) {
   console.error('\n❌ ÉCHEC D\'UN TEST :', err);

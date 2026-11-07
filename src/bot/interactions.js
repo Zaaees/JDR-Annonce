@@ -44,9 +44,18 @@ const { restoreBackupFromDiscord } = require('../storage/discordBackup');
 const { runExclusive } = require('../utils/mutex');
 const { campaignsConflict } = require('../utils/schedulingOptimizer');
 const { removeCampaignEvent } = require('./scheduledEvents');
+const {
+  SESSION_MINUTES,
+  minutesToTimeLabel,
+  getFromOptions,
+  getToOptions,
+  isValidHoursRange
+} = require('../utils/sessionHours');
 
 // Sélections en cours (avant clic sur "Valider") : Map<`${campaignId}:${userId}`, Set<number>>
 const draftSelections = new Map();
+// Plages horaires en cours : Map<`${campaignId}:${userId}`, { from: number|null, to: number|null }>
+const draftHours = new Map();
 
 function getDraftKey(campaignId, userId) {
   return `${campaignId}:${userId}`;
@@ -90,6 +99,21 @@ function getOrInitDraft(campaign, userId) {
     draftSelections.set(key, new Set(existing));
   }
   return draftSelections.get(key);
+}
+
+/**
+ * Plage horaire en cours de saisie : reprend le vote actuel du joueur, sinon sa dernière plage
+ * connue sur le serveur, sinon vide (première fois : aucune valeur imposée).
+ */
+function getOrInitDraftHours(campaign, guildData, userId) {
+  const key = getDraftKey(campaign.id, userId);
+  if (!draftHours.has(key)) {
+    const known = (campaign.voteHours && campaign.voteHours[userId]) ||
+      (guildData && guildData.playerHours && guildData.playerHours[userId]) ||
+      null;
+    draftHours.set(key, isValidHoursRange(known) ? { from: known.from, to: known.to } : { from: null, to: null });
+  }
+  return draftHours.get(key);
 }
 
 /**
@@ -279,7 +303,7 @@ function buildPlayerVotePanel(campaign, userId) {
       .setStyle(ButtonStyle.Danger),
     new ButtonBuilder()
       .setCustomId(`confirm_vote:${campaign.id}`)
-      .setLabel(count > 0 ? `Valider (${count})` : 'Valider')
+      .setLabel(count > 0 ? `Suivant (${count}) →` : 'Suivant →')
       .setStyle(ButtonStyle.Success)
       .setDisabled(count === 0)
   );
@@ -287,6 +311,68 @@ function buildPlayerVotePanel(campaign, userId) {
   return {
     content: `**${campaign.title}**\n🗓️ **Semaine 1 :** du ${weekDays[0].shortLabel} au ${weekDays[6].shortLabel}\n🗓️ **Semaine 2 :** du ${weekDays[7].shortLabel} au ${weekDays[13].shortLabel}\n👥 *Le chiffre entre parenthèses indique combien de joueurs sont disponibles ce jour-là.*`,
     components: [rowDays1, rowDays2, rowDays3, rowDays4, rowActions],
+    allowedMentions: { parse: [] }
+  };
+}
+
+/**
+ * 2ᵉ écran du vote JOUEUR : plage horaire ("Disponible dès… / Jusqu'à…") appliquée à tous les jours cochés.
+ * Le bot en déduit le créneau de 3h commun à toute la table.
+ */
+function buildPlayerHoursPanel(campaign, userId, guildData) {
+  const startDateISO = campaign.startDateISO || campaign.weekMondayISO || getMondayISO();
+  const weekDays = getRollingDays(startDateISO, 14);
+  const selected = Array.from(getOrInitDraft(campaign, userId)).sort((a, b) => a - b);
+  const hours = getOrInitDraftHours(campaign, guildData, userId);
+
+  const dayLabels = selected.map(idx => weekDays[idx] && weekDays[idx].shortLabel).filter(Boolean);
+  const daysLine = dayLabels.length <= 6 ? dayLabels.join(' · ') : `${dayLabels.length} jours`;
+
+  const bothChosen = hours.from !== null && hours.to !== null;
+  const isValid = bothChosen && isValidHoursRange(hours);
+
+  const fromSelect = new StringSelectMenuBuilder()
+    .setCustomId(`hours_from:${campaign.id}`)
+    .setPlaceholder('Disponible dès…')
+    .addOptions(getFromOptions().map(t => ({
+      label: `Dès ${minutesToTimeLabel(t)}`,
+      value: String(t),
+      default: hours.from === t
+    })));
+
+  const toSelect = new StringSelectMenuBuilder()
+    .setCustomId(`hours_to:${campaign.id}`)
+    .setPlaceholder('Jusqu’à…')
+    .addOptions(getToOptions().map(t => ({
+      label: `Jusqu’à ${minutesToTimeLabel(t)}`,
+      value: String(t),
+      default: hours.to === t
+    })));
+
+  const rowActions = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`hours_back:${campaign.id}`)
+      .setLabel('← Jours')
+      .setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId(`hours_confirm:${campaign.id}`)
+      .setLabel('Valider ✓')
+      .setStyle(ButtonStyle.Success)
+      .setDisabled(!isValid || selected.length === 0)
+  );
+
+  let content = `**${campaign.title}** — Tes horaires\n🗓️ Jours cochés : ${daysLine}\n⏱️ *Une session dure ${SESSION_MINUTES / 60}h : indique ta plage, le bot trouve le créneau commun.*`;
+  if (bothChosen && !isValid) {
+    content += `\n⚠️ Il faut au moins ${SESSION_MINUTES / 60}h entre « dès » et « jusqu’à ».`;
+  }
+
+  return {
+    content,
+    components: [
+      new ActionRowBuilder().addComponents(fromSelect),
+      new ActionRowBuilder().addComponents(toSelect),
+      rowActions
+    ],
     allowedMentions: { parse: [] }
   };
 }
@@ -519,7 +605,7 @@ function buildMJControlPanel(campaign, allCampaigns = []) {
 /**
  * Traite le résultat d'un vote joueur (validation des jours ou clic sur "Semaine prochaine")
  */
-async function processVoteSubmission(client, interaction, guildId, initialCampaign, selectedValues) {
+async function processVoteSubmission(client, interaction, guildId, initialCampaign, selectedValues, hours = null) {
   // Accuse réception immédiatement (Discord impose 3 s) si ce n'est pas déjà fait
   if (!interaction.deferred && !interaction.replied) {
     await interaction.deferUpdate();
@@ -528,11 +614,11 @@ async function processVoteSubmission(client, interaction, guildId, initialCampai
   // File d'attente par serveur : les votes simultanés sont traités l'un après l'autre,
   // chacun voyant l'état à jour laissé par le précédent.
   await runExclusive(`mutation:${guildId}`, () =>
-    processVoteSubmissionLocked(client, interaction, guildId, initialCampaign.id, selectedValues)
+    processVoteSubmissionLocked(client, interaction, guildId, initialCampaign.id, selectedValues, hours)
   );
 }
 
-async function processVoteSubmissionLocked(client, interaction, guildId, campaignId, selectedValues) {
+async function processVoteSubmissionLocked(client, interaction, guildId, campaignId, selectedValues, hours) {
   // Relit l'état à jour : le sondage a pu se clôturer pendant l'attente dans la file
   const { guild: currentGuild } = getGuildState(guildId);
   const campaign = currentGuild.campaigns.find(c => c.id === campaignId);
@@ -550,10 +636,12 @@ async function processVoteSubmissionLocked(client, interaction, guildId, campaig
     campaign.id,
     interaction.user.id,
     selectedValues,
-    roleMemberIds
+    roleMemberIds,
+    hours
   );
 
   draftSelections.delete(getDraftKey(campaign.id, interaction.user.id));
+  draftHours.delete(getDraftKey(campaign.id, interaction.user.id));
 
   await refreshDashboardMessage(client, guildId);
 
@@ -603,6 +691,8 @@ async function processVoteSubmissionLocked(client, interaction, guildId, campaig
     let pingMsg = `Nouveau sondage de disponibilité pour **${result.campaign.title}** (du ${nextDays[0].fullLabel} au ${nextDays[13].fullLabel}).`;
     if (result.conflictReason === 'DATE_ALREADY_TAKEN' && result.conflictingCampaignNames?.length > 0) {
       pingMsg = `⚠️ **Conflit de date :** Le créneau commun était déjà réservé par **${result.conflictingCampaignNames.join(', ')}**.\n${pingMsg}`;
+    } else if (result.conflictReason === 'NO_COMMON_HOURS') {
+      pingMsg = `⏰ **Pas de créneau de ${SESSION_MINUTES / 60}h commun** entre les joueurs sur les jours communs.\n${pingMsg}`;
     }
     await sendRolePing(
       client,
@@ -621,6 +711,8 @@ async function processVoteSubmissionLocked(client, interaction, guildId, campaig
     let msg = `Joueurs non disponibles jusqu'au ${untilStr}.`;
     if (result.conflictReason === 'DATE_ALREADY_TAKEN' && result.conflictingCampaignNames?.length > 0) {
       msg = `Conflit de date avec **${result.conflictingCampaignNames.join(', ')}** : joueurs non disponibles sur un autre créneau jusqu'au ${untilStr}.`;
+    } else if (result.conflictReason === 'NO_COMMON_HOURS') {
+      msg = `Pas de créneau de ${SESSION_MINUTES / 60}h commun entre les joueurs : non disponibles jusqu'au ${untilStr}.`;
     }
     await interaction.editReply({
       content: msg,
@@ -998,12 +1090,75 @@ async function handleInteraction(client, interaction) {
       return;
     }
 
+    // "Suivant" sur l'écran des jours : passe à l'écran des horaires (rien n'est encore enregistré)
     if (interaction.isButton() && interaction.customId.startsWith('confirm_vote:')) {
+      const [, campaignId] = interaction.customId.split(':');
+      await interaction.deferUpdate();
+
+      const { guildData, campaign } = await ensureCampaignLoaded(client, interaction.guildId, campaignId);
+
+      if (!campaign || campaign.status !== 'poll') {
+        await interaction.editReply({ content: 'Ce sondage n’est plus actif.', components: [] });
+        return;
+      }
+
+      if (getOrInitDraft(campaign, interaction.user.id).size === 0) {
+        await interaction.editReply(buildPlayerVotePanel(campaign, interaction.user.id));
+        return;
+      }
+
+      await interaction.editReply(buildPlayerHoursPanel(campaign, interaction.user.id, guildData));
+      return;
+    }
+
+    // Menus "Disponible dès…" / "Jusqu'à…"
+    if (
+      interaction.isStringSelectMenu() &&
+      (interaction.customId.startsWith('hours_from:') || interaction.customId.startsWith('hours_to:'))
+    ) {
+      const [kind, campaignId] = interaction.customId.split(':');
+      await interaction.deferUpdate();
+
+      const { guildData, campaign } = await ensureCampaignLoaded(client, interaction.guildId, campaignId);
+
+      if (!campaign || campaign.status !== 'poll') {
+        await interaction.editReply({ content: 'Ce sondage n’est plus actif.', components: [] });
+        return;
+      }
+
+      const value = parseInt(interaction.values[0], 10);
+      const hours = getOrInitDraftHours(campaign, guildData, interaction.user.id);
+      if (!Number.isNaN(value)) {
+        if (kind === 'hours_from') hours.from = value;
+        else hours.to = value;
+      }
+
+      await interaction.editReply(buildPlayerHoursPanel(campaign, interaction.user.id, guildData));
+      return;
+    }
+
+    if (interaction.isButton() && interaction.customId.startsWith('hours_back:')) {
+      const [, campaignId] = interaction.customId.split(':');
+      await interaction.deferUpdate();
+
+      const { campaign } = await ensureCampaignLoaded(client, interaction.guildId, campaignId);
+
+      if (!campaign || campaign.status !== 'poll') {
+        await interaction.editReply({ content: 'Ce sondage n’est plus actif.', components: [] });
+        return;
+      }
+
+      await interaction.editReply(buildPlayerVotePanel(campaign, interaction.user.id));
+      return;
+    }
+
+    // "Valider" sur l'écran des horaires : enregistre jours + plage horaire
+    if (interaction.isButton() && interaction.customId.startsWith('hours_confirm:')) {
       const [, campaignId] = interaction.customId.split(':');
       const guildId = interaction.guildId;
       await interaction.deferUpdate();
 
-      const { campaign } = await ensureCampaignLoaded(client, guildId, campaignId);
+      const { guildData, campaign } = await ensureCampaignLoaded(client, guildId, campaignId);
 
       if (!campaign || campaign.status !== 'poll') {
         await interaction.editReply({ content: 'Ce sondage n’est plus actif.', components: [] });
@@ -1020,8 +1175,20 @@ async function handleInteraction(client, interaction) {
       }
 
       const selectedSet = getOrInitDraft(campaign, interaction.user.id);
+      if (selectedSet.size === 0) {
+        // Brouillon perdu (redémarrage du bot) : retour au choix des jours
+        await interaction.editReply(buildPlayerVotePanel(campaign, interaction.user.id));
+        return;
+      }
+
+      const hours = getOrInitDraftHours(campaign, guildData, interaction.user.id);
+      if (!isValidHoursRange(hours)) {
+        await interaction.editReply(buildPlayerHoursPanel(campaign, interaction.user.id, guildData));
+        return;
+      }
+
       const selectedValues = Array.from(selectedSet).sort((a, b) => a - b).map(String);
-      await processVoteSubmission(client, interaction, guildId, campaign, selectedValues);
+      await processVoteSubmission(client, interaction, guildId, campaign, selectedValues, { from: hours.from, to: hours.to });
       return;
     }
 

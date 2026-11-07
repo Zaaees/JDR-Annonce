@@ -12,6 +12,7 @@ const {
   parseISODate
 } = require('../utils/dates');
 const { resolveCampaignSchedule, campaignsConflict } = require('../utils/schedulingOptimizer');
+const { isValidHoursRange, getCommonHours, pickSessionStart } = require('../utils/sessionHours');
 
 const DATA_DIR = path.join(__dirname, '..', '..', 'data');
 const STATE_FILE = path.join(DATA_DIR, 'state.json');
@@ -82,7 +83,8 @@ function restoreGuildState(guildId, restoredGuildData) {
   state.guilds[guildId] = {
     channelId: restoredGuildData.channelId || null,
     dashboardMessageId: restoredGuildData.dashboardMessageId || null,
-    campaigns: restoredGuildData.campaigns
+    campaigns: restoredGuildData.campaigns,
+    playerHours: restoredGuildData.playerHours || {}
   };
   saveState(state);
   return state.guilds[guildId];
@@ -186,6 +188,7 @@ function createCampaign(guildId, {
     status: 'poll', // 'poll' | 'confirmed' | 'unavailable'
     confirmedDateISO: null,
     votes: {}, // { [userId]: [0, 3, 5] } (indices 0..13 pour les 14 jours)
+    voteHours: {}, // { [userId]: { from, to } } plage horaire en minutes (cf. utils/sessionHours)
     memberIds: [], // Joueurs connus du @Rôle (sert aux conflits de planning par participant)
     lastPingMessageId: null,
     lastNudgeMessageId: null, // Dernière relance des retardataires
@@ -212,7 +215,10 @@ function updateCampaignConfig(guildId, campaignId, updates) {
   const c = guild.campaigns.find(x => x.id === campaignId);
   if (!c) return null;
   if (updates.title) c.title = String(updates.title).trim().toUpperCase();
-  if (updates.time !== undefined) c.time = updates.time ? parseTimeInput(updates.time).label : null;
+  if (updates.time !== undefined) {
+    c.time = updates.time ? parseTimeInput(updates.time).label : null;
+    delete c.preferredTime; // Choix explicite du MJ : devient l'heure habituelle
+  }
   if (updates.theme) c.theme = updates.theme;
   if (updates.bannerUrl !== undefined) c.bannerUrl = updates.bannerUrl;
   if (updates.bannerMessageId !== undefined) c.bannerMessageId = updates.bannerMessageId;
@@ -242,6 +248,7 @@ function handlePollWeekNoMatch(campaign) {
     campaign.confirmedDateISO = null;
     campaign.unavailableUntilISO = lastDayISO;
     campaign.votes = {};
+    campaign.voteHours = {};
     resetNudge(campaign);
     return {
       event: 'UNAVAILABLE_2_WEEKS',
@@ -256,6 +263,7 @@ function handlePollWeekNoMatch(campaign) {
     campaign.confirmedDateISO = null;
     campaign.unavailableUntilISO = null;
     campaign.votes = {};
+    campaign.voteHours = {};
     resetNudge(campaign);
     return {
       event: 'SHIFTED_NEXT_WEEK',
@@ -265,14 +273,41 @@ function handlePollWeekNoMatch(campaign) {
 }
 
 /**
+ * Fixe l'heure d'une session verrouillée automatiquement à partir des plages communes des joueurs.
+ * L'heure habituelle du MJ est mise de côté (preferredTime) pour être restaurée à la relance.
+ */
+function applyCommonSessionTime(campaign, voterIds) {
+  // Aucun joueur n'a donné de plage (votes antérieurs à la fonctionnalité) : l'heure du MJ reste telle quelle
+  const anyHours = voterIds.some(id => isValidHoursRange(campaign.voteHours && campaign.voteHours[id]));
+  if (!anyHours) return;
+  const common = getCommonHours(campaign.voteHours, voterIds);
+  if (!common) return;
+  const habitual = campaign.preferredTime !== undefined ? campaign.preferredTime : campaign.time;
+  const start = pickSessionStart(common, habitual);
+  if (start === campaign.time) return;
+  campaign.preferredTime = habitual || null;
+  campaign.time = start;
+}
+
+/**
+ * Remet l'heure habituelle du MJ si l'heure actuelle a été calculée depuis les plages des joueurs.
+ */
+function restoreHabitualTime(campaign) {
+  if (campaign.preferredTime === undefined) return;
+  campaign.time = campaign.preferredTime;
+  delete campaign.preferredTime;
+}
+
+/**
  * Enregistre le vote d'un joueur appartenant au @Rôle du JDR.
  * @param {string} guildId
  * @param {string} campaignId
  * @param {string} userId
  * @param {string[]} selectedValues - ex: ['0', '3', '5'] ou ['UNAVAILABLE']
  * @param {string[]} roleMemberIds - Liste des userId des membres du @Rôle devant voter
+ * @param {{from:number,to:number}|null} hours - Plage horaire du joueur (minutes), ignorée si invalide
  */
-function submitPlayerVote(guildId, campaignId, userId, selectedValues, roleMemberIds) {
+function submitPlayerVote(guildId, campaignId, userId, selectedValues, roleMemberIds, hours = null) {
   const { state, guild } = getGuildState(guildId);
   const c = guild.campaigns.find(x => x.id === campaignId);
   if (!c || c.status !== 'poll') {
@@ -295,6 +330,14 @@ function submitPlayerVote(guildId, campaignId, userId, selectedValues, roleMembe
     .filter(n => !currentDays[n] || currentDays[n].iso > todayISO);
 
   c.votes[userId] = dayIndices;
+  if (isValidHoursRange(hours)) {
+    const range = { from: hours.from, to: hours.to };
+    if (!c.voteHours) c.voteHours = {};
+    c.voteHours[userId] = range;
+    // Dernière plage du joueur : sert à préremplir ses prochains votes
+    if (!guild.playerHours) guild.playerHours = {};
+    guild.playerHours[userId] = { ...range };
+  }
 
   // Mémorise la composition connue de la table (sert à détecter les conflits par participant)
   if (Array.isArray(roleMemberIds) && roleMemberIds.length > 0) {
@@ -310,6 +353,7 @@ function submitPlayerVote(guildId, campaignId, userId, selectedValues, roleMembe
   if (resolution.action === 'CONFIRM') {
     c.status = 'confirmed';
     c.confirmedDateISO = resolution.confirmedDateISO;
+    applyCommonSessionTime(c, activeVoterIds);
     c.failedWeeksCount = 0;
     c.unavailableUntilISO = null;
     saveState(state);
@@ -333,6 +377,7 @@ function submitPlayerVote(guildId, campaignId, userId, selectedValues, roleMembe
     // Met à jour la table courante
     c.status = 'confirmed';
     c.confirmedDateISO = resolution.confirmedDateISO;
+    applyCommonSessionTime(c, activeVoterIds);
     c.failedWeeksCount = 0;
     c.unavailableUntilISO = null;
     saveState(state);
@@ -355,6 +400,12 @@ function submitPlayerVote(guildId, campaignId, userId, selectedValues, roleMembe
       conflictReason: 'DATE_ALREADY_TAKEN',
       conflictingCampaignNames: resolution.conflictingCampaignNames
     };
+  }
+
+  if (resolution.action === 'NO_COMMON_HOURS') {
+    const result = handlePollWeekNoMatch(c);
+    saveState(state);
+    return { ...result, conflictReason: 'NO_COMMON_HOURS' };
   }
 
   if (resolution.action === 'NO_COMMON_DAYS') {
@@ -399,6 +450,7 @@ function setManualSessionDate(guildId, campaignId, dateISO, timeStr = null) {
   c.confirmedDateISO = dateISO;
   if (timeStr) {
     c.time = parseTimeInput(timeStr).label;
+    delete c.preferredTime;
   }
   c.failedWeeksCount = 0;
   c.unavailableUntilISO = null;
@@ -418,6 +470,7 @@ function clearSessionDate(guildId, campaignId) {
   c.confirmedDateISO = null;
   c.failedWeeksCount = 0;
   c.unavailableUntilISO = null;
+  restoreHabitualTime(c);
   saveState(state);
   return c;
 }
@@ -449,6 +502,8 @@ function restartCampaignPoll(guildId, campaignId, { nextWeek = false } = {}) {
   c.failedWeeksCount = 0;
   c.unavailableUntilISO = null;
   c.votes = {};
+  c.voteHours = {};
+  restoreHabitualTime(c);
   resetNudge(c);
   saveState(state);
   return c;
@@ -466,7 +521,9 @@ function setCampaignStatus(guildId, campaignId, newStatus) {
   if (newStatus === 'paused' || newStatus === 'prep') {
     c.confirmedDateISO = null;
     c.time = null;
+    delete c.preferredTime;
     c.votes = {};
+    c.voteHours = {};
     resetNudge(c);
     c.failedWeeksCount = 0;
     c.unavailableUntilISO = null;
@@ -476,7 +533,9 @@ function setCampaignStatus(guildId, campaignId, newStatus) {
     c.weekMondayISO = start;
     c.confirmedDateISO = null;
     c.time = null;
+    delete c.preferredTime;
     c.votes = {};
+    c.voteHours = {};
     resetNudge(c);
     c.failedWeeksCount = 0;
     c.unavailableUntilISO = null;
