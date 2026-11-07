@@ -29,7 +29,8 @@ const {
   getWeekDaysFromMonday,
   formatFullDateFR,
   formatDayMonthFR,
-  parseTimeInput
+  parseTimeInput,
+  parseISODate
 } = require('../utils/dates');
 const {
   getRolePlayers,
@@ -49,12 +50,13 @@ const {
   minutesToTimeLabel,
   getFromOptions,
   getToOptions,
-  isValidHoursRange
+  isValidHoursRange,
+  getPlayerHoursForDay
 } = require('../utils/sessionHours');
 
 // Sélections en cours (avant clic sur "Valider") : Map<`${campaignId}:${userId}`, Set<number>>
 const draftSelections = new Map();
-// Plages horaires en cours : Map<`${campaignId}:${userId}`, { from: number|null, to: number|null }>
+// Plages horaires en cours : Map<`${campaignId}:${userId}`, { active: dayIdx|null, days: { [dayIdx]: { from, to } } }>
 const draftHours = new Map();
 
 function getDraftKey(campaignId, userId) {
@@ -102,18 +104,36 @@ function getOrInitDraft(campaign, userId) {
 }
 
 /**
- * Plage horaire en cours de saisie : reprend le vote actuel du joueur, sinon sa dernière plage
- * connue sur le serveur, sinon vide (première fois : aucune valeur imposée).
+ * Plages horaires en cours de saisie (une par jour coché) et jour actuellement réglé.
+ * Chaque jour est prérempli avec : le vote actuel du joueur, sinon sa dernière plage pour ce jour
+ * de la semaine, sinon vide (aucune valeur imposée).
  */
-function getOrInitDraftHours(campaign, guildData, userId) {
+function getHoursDraftState(campaign, guildData, userId) {
   const key = getDraftKey(campaign.id, userId);
-  if (!draftHours.has(key)) {
-    const known = (campaign.voteHours && campaign.voteHours[userId]) ||
-      (guildData && guildData.playerHours && guildData.playerHours[userId]) ||
-      null;
-    draftHours.set(key, isValidHoursRange(known) ? { from: known.from, to: known.to } : { from: null, to: null });
+  if (!draftHours.has(key)) draftHours.set(key, { active: null, days: {} });
+  const draft = draftHours.get(key);
+
+  const startDateISO = campaign.startDateISO || campaign.weekMondayISO || getMondayISO();
+  const weekDays = getRollingDays(startDateISO, 14);
+  const selected = Array.from(getOrInitDraft(campaign, userId))
+    .filter(idx => weekDays[idx])
+    .sort((a, b) => a - b);
+
+  const voted = campaign.voteHours && campaign.voteHours[userId];
+  const memory = guildData && guildData.playerHours && guildData.playerHours[userId];
+  for (const idx of selected) {
+    if (draft.days[idx]) continue;
+    const weekday = (parseISODate(weekDays[idx].iso).getDay() + 6) % 7;
+    const known = getPlayerHoursForDay(voted, idx) || getPlayerHoursForDay(memory, weekday);
+    draft.days[idx] = known ? { from: known.from, to: known.to } : { from: null, to: null };
   }
-  return draftHours.get(key);
+
+  if (!selected.includes(draft.active)) {
+    const firstMissing = selected.find(idx => !isValidHoursRange(draft.days[idx]));
+    draft.active = firstMissing !== undefined ? firstMissing : (selected[0] !== undefined ? selected[0] : null);
+  }
+
+  return { draft, selected, weekDays };
 }
 
 /**
@@ -316,20 +336,33 @@ function buildPlayerVotePanel(campaign, userId) {
 }
 
 /**
- * 2ᵉ écran du vote JOUEUR : plage horaire ("Disponible dès… / Jusqu'à…") appliquée à tous les jours cochés.
- * Le bot en déduit le créneau de 3h commun à toute la table.
+ * 2ᵉ écran du vote JOUEUR : une plage horaire ("Disponible dès… / Jusqu'à…") par jour coché.
+ * Un menu en haut choisit le jour réglé ; le bot en déduit le créneau de 3h commun de chaque jour.
  */
 function buildPlayerHoursPanel(campaign, userId, guildData) {
-  const startDateISO = campaign.startDateISO || campaign.weekMondayISO || getMondayISO();
-  const weekDays = getRollingDays(startDateISO, 14);
-  const selected = Array.from(getOrInitDraft(campaign, userId)).sort((a, b) => a - b);
-  const hours = getOrInitDraftHours(campaign, guildData, userId);
+  const { draft, selected, weekDays } = getHoursDraftState(campaign, guildData, userId);
+  const active = draft.active;
+  const hours = active !== null ? draft.days[active] : { from: null, to: null };
+  const isMulti = selected.length > 1;
+  const h = SESSION_MINUTES / 60;
 
-  const dayLabels = selected.map(idx => weekDays[idx] && weekDays[idx].shortLabel).filter(Boolean);
-  const daysLine = dayLabels.length <= 6 ? dayLabels.join(' · ') : `${dayLabels.length} jours`;
+  const rangeText = r => (isValidHoursRange(r)
+    ? `${minutesToTimeLabel(r.from)} → ${minutesToTimeLabel(r.to)}`
+    : '⚠️ à définir');
 
-  const bothChosen = hours.from !== null && hours.to !== null;
-  const isValid = bothChosen && isValidHoursRange(hours);
+  const rows = [];
+
+  if (isMulti) {
+    const daySelect = new StringSelectMenuBuilder()
+      .setCustomId(`hours_day:${campaign.id}`)
+      .setPlaceholder('Jour à régler…')
+      .addOptions(selected.map(idx => ({
+        label: `📅 ${weekDays[idx].shortLabel} — ${rangeText(draft.days[idx])}`,
+        value: String(idx),
+        default: idx === active
+      })));
+    rows.push(new ActionRowBuilder().addComponents(daySelect));
+  }
 
   const fromSelect = new StringSelectMenuBuilder()
     .setCustomId(`hours_from:${campaign.id}`)
@@ -348,31 +381,55 @@ function buildPlayerHoursPanel(campaign, userId, guildData) {
       value: String(t),
       default: hours.to === t
     })));
+  rows.push(new ActionRowBuilder().addComponents(fromSelect));
+  rows.push(new ActionRowBuilder().addComponents(toSelect));
 
-  const rowActions = new ActionRowBuilder().addComponents(
+  const missing = selected.filter(idx => !isValidHoursRange(draft.days[idx]));
+  const activeValid = isValidHoursRange(hours);
+
+  const buttons = [
     new ButtonBuilder()
       .setCustomId(`hours_back:${campaign.id}`)
       .setLabel('← Jours')
-      .setStyle(ButtonStyle.Secondary),
+      .setStyle(ButtonStyle.Secondary)
+  ];
+  if (isMulti) {
+    buttons.push(
+      new ButtonBuilder()
+        .setCustomId(`hours_copy:${campaign.id}`)
+        .setLabel('Copier sur tous les jours')
+        .setStyle(ButtonStyle.Primary)
+        .setDisabled(!activeValid)
+    );
+  }
+  buttons.push(
     new ButtonBuilder()
       .setCustomId(`hours_confirm:${campaign.id}`)
       .setLabel('Valider ✓')
       .setStyle(ButtonStyle.Success)
-      .setDisabled(!isValid || selected.length === 0)
+      .setDisabled(selected.length === 0 || missing.length > 0)
   );
+  rows.push(new ActionRowBuilder().addComponents(buttons));
 
-  let content = `**${campaign.title}** — Tes horaires\n🗓️ Jours cochés : ${daysLine}\n⏱️ *Une session dure ${SESSION_MINUTES / 60}h : indique ta plage, le bot trouve le créneau commun.*`;
-  if (bothChosen && !isValid) {
-    content += `\n⚠️ Il faut au moins ${SESSION_MINUTES / 60}h entre « dès » et « jusqu’à ».`;
+  const activeLabel = active !== null ? weekDays[active].shortLabel : '';
+  let content = `**${campaign.title}** — Tes horaires
+⏱️ *Une session dure ${h}h. ` +
+    (isMulti ? 'Choisis un jour, puis ta plage' : 'Indique ta plage') +
+    ' : le bot trouve le créneau commun.*';
+  content += `
+✏️ Réglage : **${activeLabel}**`;
+  if (hours.from !== null && hours.to !== null && !activeValid) {
+    content += `
+⚠️ Il faut au moins ${h}h entre « dès » et « jusqu’à ».`;
+  }
+  if (isMulti && missing.length > 0) {
+    content += `
+🕓 Encore à régler : ${missing.map(idx => weekDays[idx].shortLabel).join(' · ')}`;
   }
 
   return {
     content,
-    components: [
-      new ActionRowBuilder().addComponents(fromSelect),
-      new ActionRowBuilder().addComponents(toSelect),
-      rowActions
-    ],
+    components: rows,
     allowedMentions: { parse: [] }
   };
 }
@@ -1127,10 +1184,53 @@ async function handleInteraction(client, interaction) {
       }
 
       const value = parseInt(interaction.values[0], 10);
-      const hours = getOrInitDraftHours(campaign, guildData, interaction.user.id);
-      if (!Number.isNaN(value)) {
+      const { draft } = getHoursDraftState(campaign, guildData, interaction.user.id);
+      const hours = draft.active !== null ? draft.days[draft.active] : null;
+      if (hours && !Number.isNaN(value)) {
         if (kind === 'hours_from') hours.from = value;
         else hours.to = value;
+      }
+
+      await interaction.editReply(buildPlayerHoursPanel(campaign, interaction.user.id, guildData));
+      return;
+    }
+
+    // Menu "Jour à régler" de l'écran des horaires
+    if (interaction.isStringSelectMenu() && interaction.customId.startsWith('hours_day:')) {
+      const [, campaignId] = interaction.customId.split(':');
+      await interaction.deferUpdate();
+
+      const { guildData, campaign } = await ensureCampaignLoaded(client, interaction.guildId, campaignId);
+
+      if (!campaign || campaign.status !== 'poll') {
+        await interaction.editReply({ content: 'Ce sondage n’est plus actif.', components: [] });
+        return;
+      }
+
+      const dayIdx = parseInt(interaction.values[0], 10);
+      const { draft, selected } = getHoursDraftState(campaign, guildData, interaction.user.id);
+      if (selected.includes(dayIdx)) draft.active = dayIdx;
+
+      await interaction.editReply(buildPlayerHoursPanel(campaign, interaction.user.id, guildData));
+      return;
+    }
+
+    // "Copier sur tous les jours" : applique la plage du jour réglé à tous les jours cochés
+    if (interaction.isButton() && interaction.customId.startsWith('hours_copy:')) {
+      const [, campaignId] = interaction.customId.split(':');
+      await interaction.deferUpdate();
+
+      const { guildData, campaign } = await ensureCampaignLoaded(client, interaction.guildId, campaignId);
+
+      if (!campaign || campaign.status !== 'poll') {
+        await interaction.editReply({ content: 'Ce sondage n’est plus actif.', components: [] });
+        return;
+      }
+
+      const { draft, selected } = getHoursDraftState(campaign, guildData, interaction.user.id);
+      const source = draft.active !== null ? draft.days[draft.active] : null;
+      if (isValidHoursRange(source)) {
+        for (const idx of selected) draft.days[idx] = { from: source.from, to: source.to };
       }
 
       await interaction.editReply(buildPlayerHoursPanel(campaign, interaction.user.id, guildData));
@@ -1181,14 +1281,16 @@ async function handleInteraction(client, interaction) {
         return;
       }
 
-      const hours = getOrInitDraftHours(campaign, guildData, interaction.user.id);
-      if (!isValidHoursRange(hours)) {
+      const { draft, selected } = getHoursDraftState(campaign, guildData, interaction.user.id);
+      if (selected.some(idx => !isValidHoursRange(draft.days[idx]))) {
         await interaction.editReply(buildPlayerHoursPanel(campaign, interaction.user.id, guildData));
         return;
       }
 
+      const hoursByDay = {};
+      for (const idx of selected) hoursByDay[idx] = { from: draft.days[idx].from, to: draft.days[idx].to };
       const selectedValues = Array.from(selectedSet).sort((a, b) => a - b).map(String);
-      await processVoteSubmission(client, interaction, guildId, campaign, selectedValues, { from: hours.from, to: hours.to });
+      await processVoteSubmission(client, interaction, guildId, campaign, selectedValues, hoursByDay);
       return;
     }
 

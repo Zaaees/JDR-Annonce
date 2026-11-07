@@ -58,15 +58,15 @@ function getCampaignUnanimousDates(campaign, roleMemberIds = []) {
   const activeVoterIds = roleMemberIds && roleMemberIds.length > 0
     ? roleMemberIds
     : Object.keys(campaign.votes);
-  // Un jour commun ne compte que si les joueurs ont aussi au moins 3h communes
-  if (!getCommonHours(campaign.voteHours, activeVoterIds)) return [];
-  return getUnanimousDaysIgnoringHours(campaign, activeVoterIds);
+  // Un jour commun ne compte que si les joueurs ont aussi au moins 3h communes CE jour-là
+  return getUnanimousDaysIgnoringHours(campaign, activeVoterIds, true);
 }
 
 /**
- * Jours où 100% des joueurs attendus sont disponibles, sans tenir compte des plages horaires.
+ * Jours où 100% des joueurs attendus sont disponibles.
+ * @param {boolean} requireHours - si true, ne garde que les jours avec au moins 3h communes
  */
-function getUnanimousDaysIgnoringHours(campaign, activeVoterIds) {
+function getUnanimousDaysIgnoringHours(campaign, activeVoterIds, requireHours = false) {
   if (!campaign || !campaign.votes || activeVoterIds.length === 0) return [];
 
   // Vérifie si 100% des joueurs attendus ont voté
@@ -83,9 +83,9 @@ function getUnanimousDaysIgnoringHours(campaign, activeVoterIds) {
     const isUnanimous = activeVoterIds.every(id =>
       Array.isArray(campaign.votes[id]) && campaign.votes[id].includes(idx)
     );
-    if (isUnanimous && days[idx]) {
-      unanimous.push(days[idx].iso);
-    }
+    if (!isUnanimous || !days[idx]) continue;
+    if (requireHours && !getCommonHours(campaign.voteHours, activeVoterIds, idx)) continue;
+    unanimous.push(days[idx].iso);
   }
 
   return unanimous;
@@ -107,13 +107,12 @@ function getCampaignPotentialDates(campaign) {
   if (voters.length === 0) {
     return days.filter(d => d.iso > todayISO).map(d => d.iso);
   }
-  // Les votants actuels n'ont déjà plus 3h en commun : aucun jour ne pourra être retenu
-  if (!getCommonHours(campaign.voteHours, voters)) return [];
-
   const potential = [];
   for (let idx = 0; idx < 14; idx++) {
     if (days[idx] && days[idx].iso <= todayISO) continue;
-    const worksForAllVoters = voters.every(id => campaign.votes[id].includes(idx));
+    // Un jour où les votants actuels n'ont déjà plus 3h en commun ne pourra pas être retenu
+    const worksForAllVoters = voters.every(id => campaign.votes[id].includes(idx)) &&
+      Boolean(getCommonHours(campaign.voteHours, voters, idx));
     if (worksForAllVoters && days[idx]) {
       potential.push(days[idx].iso);
     }

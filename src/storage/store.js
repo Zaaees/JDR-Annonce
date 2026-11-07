@@ -12,7 +12,7 @@ const {
   parseISODate
 } = require('../utils/dates');
 const { resolveCampaignSchedule, campaignsConflict } = require('../utils/schedulingOptimizer');
-const { isValidHoursRange, getCommonHours, pickSessionStart } = require('../utils/sessionHours');
+const { getPlayerHoursForDay, getCommonHours, pickSessionStart } = require('../utils/sessionHours');
 
 const DATA_DIR = path.join(__dirname, '..', '..', 'data');
 const STATE_FILE = path.join(DATA_DIR, 'state.json');
@@ -188,7 +188,7 @@ function createCampaign(guildId, {
     status: 'poll', // 'poll' | 'confirmed' | 'unavailable'
     confirmedDateISO: null,
     votes: {}, // { [userId]: [0, 3, 5] } (indices 0..13 pour les 14 jours)
-    voteHours: {}, // { [userId]: { from, to } } plage horaire en minutes (cf. utils/sessionHours)
+    voteHours: {}, // { [userId]: { [dayIdx]: { from, to } } } plages horaires en minutes (cf. utils/sessionHours)
     memberIds: [], // Joueurs connus du @Rôle (sert aux conflits de planning par participant)
     lastPingMessageId: null,
     lastNudgeMessageId: null, // Dernière relance des retardataires
@@ -277,16 +277,55 @@ function handlePollWeekNoMatch(campaign) {
  * L'heure habituelle du MJ est mise de côté (preferredTime) pour être restaurée à la relance.
  */
 function applyCommonSessionTime(campaign, voterIds) {
-  // Aucun joueur n'a donné de plage (votes antérieurs à la fonctionnalité) : l'heure du MJ reste telle quelle
-  const anyHours = voterIds.some(id => isValidHoursRange(campaign.voteHours && campaign.voteHours[id]));
+  const days = getRollingDays(campaign.startDateISO || campaign.weekMondayISO || getMondayISO(), 14);
+  const dayIdx = days.findIndex(d => d.iso === campaign.confirmedDateISO);
+  if (dayIdx === -1) return;
+  // Aucun joueur n'a donné de plage pour ce jour (votes antérieurs) : l'heure du MJ reste telle quelle
+  const anyHours = voterIds.some(id => getPlayerHoursForDay(campaign.voteHours && campaign.voteHours[id], dayIdx));
   if (!anyHours) return;
-  const common = getCommonHours(campaign.voteHours, voterIds);
+  const common = getCommonHours(campaign.voteHours, voterIds, dayIdx);
   if (!common) return;
   const habitual = campaign.preferredTime !== undefined ? campaign.preferredTime : campaign.time;
   const start = pickSessionStart(common, habitual);
   if (start === campaign.time) return;
   campaign.preferredTime = habitual || null;
   campaign.time = start;
+}
+
+/** Jour de la semaine d'une date ISO, 0 = lundi … 6 = dimanche */
+function weekdayOf(iso) {
+  return (parseISODate(iso).getDay() + 6) % 7;
+}
+
+/**
+ * Enregistre les plages d'un joueur pour chacun de ses jours cochés, et les mémorise
+ * par jour de la semaine (guild.playerHours[userId][0..6]) pour préremplir ses prochains votes.
+ */
+function recordPlayerHours(guild, campaign, userId, dayIndices, currentDays, hours) {
+  if (!hours) return;
+  const perDay = {};
+  for (const idx of dayIndices) {
+    const r = getPlayerHoursForDay(hours, idx);
+    if (r) perDay[idx] = { from: r.from, to: r.to };
+  }
+  if (Object.keys(perDay).length === 0) return;
+
+  if (!campaign.voteHours) campaign.voteHours = {};
+  campaign.voteHours[userId] = perDay;
+
+  if (!guild.playerHours) guild.playerHours = {};
+  const previous = guild.playerHours[userId];
+  // Ancien format (plage unique) : sert de base pour tous les jours de la semaine
+  const memory = {};
+  for (let wd = 0; wd < 7; wd++) {
+    const r = getPlayerHoursForDay(previous, wd);
+    if (r) memory[wd] = { from: r.from, to: r.to };
+  }
+  for (const [idx, r] of Object.entries(perDay)) {
+    const day = currentDays[idx];
+    if (day) memory[weekdayOf(day.iso)] = { ...r };
+  }
+  guild.playerHours[userId] = memory;
 }
 
 /**
@@ -305,7 +344,8 @@ function restoreHabitualTime(campaign) {
  * @param {string} userId
  * @param {string[]} selectedValues - ex: ['0', '3', '5'] ou ['UNAVAILABLE']
  * @param {string[]} roleMemberIds - Liste des userId des membres du @Rôle devant voter
- * @param {{from:number,to:number}|null} hours - Plage horaire du joueur (minutes), ignorée si invalide
+ * @param {Object|null} hours - Plages horaires du joueur (minutes) : { [dayIdx]: {from,to} },
+ *   ou {from,to} appliquée à tous les jours cochés. Les plages invalides sont ignorées.
  */
 function submitPlayerVote(guildId, campaignId, userId, selectedValues, roleMemberIds, hours = null) {
   const { state, guild } = getGuildState(guildId);
@@ -330,14 +370,7 @@ function submitPlayerVote(guildId, campaignId, userId, selectedValues, roleMembe
     .filter(n => !currentDays[n] || currentDays[n].iso > todayISO);
 
   c.votes[userId] = dayIndices;
-  if (isValidHoursRange(hours)) {
-    const range = { from: hours.from, to: hours.to };
-    if (!c.voteHours) c.voteHours = {};
-    c.voteHours[userId] = range;
-    // Dernière plage du joueur : sert à préremplir ses prochains votes
-    if (!guild.playerHours) guild.playerHours = {};
-    guild.playerHours[userId] = { ...range };
-  }
+  recordPlayerHours(guild, c, userId, dayIndices, currentDays, hours);
 
   // Mémorise la composition connue de la table (sert à détecter les conflits par participant)
   if (Array.isArray(roleMemberIds) && roleMemberIds.length > 0) {
@@ -372,6 +405,11 @@ function submitPlayerVote(guildId, campaignId, userId, selectedValues, roleMembe
       swapped.status = 'confirmed';
       swapped.failedWeeksCount = 0;
       swapped.unavailableUntilISO = null;
+      // Nouveau jour = nouvelles plages : l'heure de la table déplacée est recalculée pour ce jour
+      const swappedVoters = Array.isArray(swapped.memberIds) && swapped.memberIds.length > 0
+        ? swapped.memberIds
+        : Object.keys(swapped.votes || {});
+      applyCommonSessionTime(swapped, swappedVoters);
     }
 
     // Met à jour la table courante

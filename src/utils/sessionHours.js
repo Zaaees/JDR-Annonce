@@ -51,16 +51,28 @@ function isValidHoursRange(range) {
 }
 
 /**
- * Intersection des plages des joueurs attendus. Un joueur sans plage enregistrée
+ * Plage d'un joueur pour un jour donné.
+ * `entry` est soit { [dayIdx]: {from,to} } (plage par jour), soit {from,to} (ancienne plage unique = tous les jours).
+ * @returns {{from:number,to:number}|null}
+ */
+function getPlayerHoursForDay(entry, dayIdx) {
+  if (!entry) return null;
+  if (isValidHoursRange(entry)) return entry;
+  const r = entry[dayIdx];
+  return isValidHoursRange(r) ? r : null;
+}
+
+/**
+ * Intersection des plages des joueurs attendus pour un jour. Un joueur sans plage enregistrée
  * (vote antérieur à la fonctionnalité) est considéré disponible sur toute la plage.
  * @returns {{from:number,to:number}|null} null si moins de 3h communes
  */
-function getCommonHours(voteHours, voterIds) {
+function getCommonHours(voteHours, voterIds, dayIdx = null) {
   let from = FULL_RANGE.from;
   let to = FULL_RANGE.to;
   for (const id of voterIds || []) {
-    const r = voteHours && voteHours[id];
-    if (!isValidHoursRange(r)) continue;
+    const r = getPlayerHoursForDay(voteHours && voteHours[id], dayIdx);
+    if (!r) continue;
     from = Math.max(from, r.from);
     to = Math.min(to, r.to);
   }
@@ -88,6 +100,7 @@ module.exports = {
   getFromOptions,
   getToOptions,
   isValidHoursRange,
+  getPlayerHoursForDay,
   getCommonHours,
   pickSessionStart
 };

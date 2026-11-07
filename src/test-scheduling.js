@@ -368,7 +368,7 @@ try {
   assert.strictEqual(resHrs.confirmedDateISO, wedW2);
   assert.strictEqual(resHrs.campaign.time, '20h00', 'Heure MJ (18h) hors plage commune : début commun 20h00');
   const savedGuild = loadState().guilds[guildId];
-  assert.deepStrictEqual(savedGuild.playerHours.h2, { from: 20 * 60, to: 25 * 60 }, 'Dernière plage mémorisée pour préremplir');
+  assert.deepStrictEqual(savedGuild.playerHours.h2['2'], { from: 20 * 60, to: 25 * 60 }, 'Dernière plage mémorisée (mercredi) pour préremplir');
   // Relance : l'heure habituelle du MJ revient
   const restartedHrs = restartCampaignPoll(guildId, hrsTable.id);
   assert.strictEqual(restartedHrs.time, '18h00', 'L\'heure du MJ est restaurée après la session');
@@ -401,6 +401,73 @@ try {
   assert.strictEqual(resNoBoth.event, 'SHIFTED_NEXT_WEEK');
   assert.notStrictEqual(resNoBoth.conflictReason, 'NO_COMMON_HOURS');
   console.log('✅ Sans jour commun, le motif reste celui des jours.');
+
+  // =========================================================================
+  // TEST 11 : Plage horaire par jour
+  // =========================================================================
+  console.log('\n--- Test 11 : Plage horaire différente selon le jour ---');
+  const { getPlayerHoursForDay } = require('./utils/sessionHours');
+  const perDay = { 9: { from: 18 * 60, to: 21 * 60 }, 10: { from: 20 * 60, to: 23 * 60 } };
+  assert.deepStrictEqual(getPlayerHoursForDay(perDay, 10), { from: 20 * 60, to: 23 * 60 });
+  assert.strictEqual(getPlayerHoursForDay(perDay, 11), null, 'Jour sans plage');
+  assert.deepStrictEqual(getPlayerHoursForDay({ from: 19 * 60, to: 23 * 60 }, 4), { from: 19 * 60, to: 23 * 60 }, 'Ancienne plage unique = tous les jours');
+  assert.deepStrictEqual(
+    getCommonHours({ a: perDay, b: { 10: { from: 19 * 60, to: 24 * 60 } } }, ['a', 'b'], 10),
+    { from: 20 * 60, to: 23 * 60 }
+  );
+  assert.strictEqual(getCommonHours({ a: perDay, b: { 9: { from: 19 * 60, to: 24 * 60 } } }, ['a', 'b'], 9), null);
+
+  // Mercredi S2 (9) : pas 3h communes ; Jeudi S2 (10) : 20h-23h commun -> Jeudi retenu à 20h00
+  resetTestState(guildId);
+  const dayTable = createCampaign(guildId, { title: 'TABLE PAR JOUR', mjId: 'mj_d', roleId: 'role_d' });
+  submitPlayerVote(guildId, dayTable.id, 'd1', ['9', '10'], ['d1', 'd2'], {
+    9: { from: 18 * 60, to: 21 * 60 },
+    10: { from: 20 * 60, to: 23 * 60 }
+  });
+  const resDay = submitPlayerVote(guildId, dayTable.id, 'd2', ['9', '10'], ['d1', 'd2'], {
+    9: { from: 20 * 60, to: 23 * 60 },
+    10: { from: 19 * 60, to: 24 * 60 }
+  });
+  assert.strictEqual(resDay.event, 'AUTO_CONFIRMED');
+  assert.strictEqual(resDay.confirmedDateISO, rollingDays[10].iso, 'Seul le jeudi a 3h communes');
+  assert.strictEqual(resDay.campaign.time, '20h00');
+  const dayGuild = loadState().guilds[guildId];
+  assert.deepStrictEqual(dayGuild.campaigns[0].voteHours.d1['9'], { from: 18 * 60, to: 21 * 60 });
+  // Mémorisé par jour de la semaine (0 = lundi) : mercredi = 2, jeudi = 3
+  assert.deepStrictEqual(dayGuild.playerHours.d1['2'], { from: 18 * 60, to: 21 * 60 });
+  assert.deepStrictEqual(dayGuild.playerHours.d1['3'], { from: 20 * 60, to: 23 * 60 });
+  console.log('✅ Le jour retenu est celui qui a 3h communes, à l\'heure de ce jour-là.');
+
+  // Jours communs mais aucun n'a 3h communes -> NO_COMMON_HOURS
+  resetTestState(guildId);
+  const dayNone = createCampaign(guildId, { title: 'TABLE PAR JOUR VIDE', mjId: 'mj_e', roleId: 'role_e' });
+  submitPlayerVote(guildId, dayNone.id, 'e1', ['9', '10'], ['e1', 'e2'], {
+    9: { from: 14 * 60, to: 17 * 60 },
+    10: { from: 14 * 60, to: 17 * 60 }
+  });
+  const resDayNone = submitPlayerVote(guildId, dayNone.id, 'e2', ['9', '10'], ['e1', 'e2'], {
+    9: { from: 20 * 60, to: 23 * 60 },
+    10: { from: 20 * 60, to: 23 * 60 }
+  });
+  assert.strictEqual(resDayNone.conflictReason, 'NO_COMMON_HOURS');
+  console.log('✅ Aucun jour commun avec 3h communes : motif « NO_COMMON_HOURS ».');
+
+  // Permutation : la table déplacée prend l'heure commune de son NOUVEAU jour
+  resetTestState(guildId);
+  const swA = createCampaign(guildId, { title: 'SWAP A', mjId: 'mj_s', roleId: 'role_swa' });
+  const swB = createCampaign(guildId, { title: 'SWAP B', mjId: 'mj_s', roleId: 'role_swb' });
+  const swAHours = { 9: { from: 20 * 60, to: 23 * 60 }, 10: { from: 14 * 60, to: 17 * 60 } };
+  submitPlayerVote(guildId, swA.id, 'sa1', ['9', '10'], ['sa1', 'sa2'], swAHours);
+  const resSwA = submitPlayerVote(guildId, swA.id, 'sa2', ['9', '10'], ['sa1', 'sa2'], swAHours);
+  assert.strictEqual(resSwA.confirmedDateISO, rollingDays[9].iso);
+  assert.strictEqual(resSwA.campaign.time, '20h00');
+  submitPlayerVote(guildId, swB.id, 'sb1', ['9'], ['sb1', 'sb2'], { 9: { from: 20 * 60, to: 23 * 60 } });
+  const resSwB = submitPlayerVote(guildId, swB.id, 'sb2', ['9'], ['sb1', 'sb2'], { 9: { from: 20 * 60, to: 23 * 60 } });
+  assert.strictEqual(resSwB.event, 'AUTO_CONFIRMED_WITH_SWAP');
+  const movedA = loadState().guilds[guildId].campaigns.find(c => c.id === swA.id);
+  assert.strictEqual(movedA.confirmedDateISO, rollingDays[10].iso);
+  assert.strictEqual(movedA.time, '14h00', 'Heure recalculée pour le nouveau jour de la table déplacée');
+  console.log('✅ Table déplacée : heure recalculée pour son nouveau jour.');
 
   console.log('\n🎉 TOUS LES TESTS SONT PASSÉS AVEC SUCCÈS !');
 } catch (err) {
