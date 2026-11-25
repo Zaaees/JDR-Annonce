@@ -43,7 +43,8 @@ const {
 const { createCropSession } = require('../server/cropServer');
 const { restoreBackupFromDiscord } = require('../storage/discordBackup');
 const { runExclusive } = require('../utils/mutex');
-const { traceInteraction } = require('../utils/diag');
+const { traceInteraction, logDiag } = require('../utils/diag');
+const { installLazyDefer } = require('../utils/lazyDefer');
 const { campaignsConflict } = require('../utils/schedulingOptimizer');
 const { removeCampaignEvent } = require('./scheduledEvents');
 const {
@@ -91,32 +92,6 @@ async function ensureCampaignLoaded(client, guildId, campaignId, fallbackMessage
   }
 
   return { guildData, campaign };
-}
-
-/**
- * Charge une table pour un panneau éphémère en évitant l'accusé « réfléchit… » quand c'est possible.
- * Si la table est déjà en mémoire, on répondra directement (un seul appel, sans editReply) :
- * Discord renvoie parfois un 429 de près d'une heure sur l'édition d'une réponse différée,
- * ce qui laissait le message bloqué sur « réfléchit… ».
- * Sinon (redémarrage, restauration depuis Discord nécessaire), on diffère avant de charger.
- */
-async function loadCampaignForReply(client, interaction, guildId, campaignId) {
-  const { guild: guildData } = getGuildState(guildId);
-  const campaign = guildData.campaigns.find(c => c.id === campaignId);
-  if (campaign) return { guildData, campaign };
-
-  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-  return ensureCampaignLoaded(client, guildId, campaignId, interaction.message);
-}
-
-/**
- * Envoie un panneau éphémère : réponse directe si rien n'a encore été envoyé, sinon édition du différé.
- */
-async function respondEphemeral(interaction, payload) {
-  if (interaction.deferred || interaction.replied) {
-    return interaction.editReply(payload);
-  }
-  return interaction.reply({ ...payload, flags: MessageFlags.Ephemeral });
 }
 
 function getOrInitDraft(campaign, userId) {
@@ -727,48 +702,48 @@ async function processVoteSubmissionLocked(client, interaction, guildId, campaig
   draftSelections.delete(getDraftKey(campaign.id, interaction.user.id));
   draftHours.delete(getDraftKey(campaign.id, interaction.user.id));
 
-  await refreshDashboardMessage(client, guildId);
+  // Réponse au joueur d'abord (doit partir en moins de 3 s), puis messages et affiche publics
+  const afterReply = [];
 
   if (result.event === 'AUTO_CONFIRMED') {
     const dateStr = formatFullDateFR(result.campaign.confirmedDateISO);
     const timeInfo = result.campaign.time ? ` à ${result.campaign.time}` : '';
-    await sendRolePing(
-      client,
-      guildId,
-      result.campaign,
-      `Session validée pour **${result.campaign.title}** : **${dateStr}${timeInfo}**.`
-    );
     await interaction.editReply({
       content: `Session validée : **${dateStr}${timeInfo}**.`,
       components: []
     });
-  } else if (result.event === 'AUTO_CONFIRMED_WITH_SWAP') {
-    const oldDateStr = formatFullDateFR(result.swappedOldDateISO);
-    const newDateStr = formatFullDateFR(result.swappedNewDateISO);
-    const swappedTimeInfo = result.swappedCampaign.time ? ` à ${result.swappedCampaign.time}` : '';
-
-    // Notifie la table déplacée en expliquant l'arbitrage automatique
-    await sendRolePing(
-      client,
-      guildId,
-      result.swappedCampaign,
-      `🔄 **Ajustement de planning automatique :**\nLa session de **${result.swappedCampaign.title}** a été déplacée au **${newDateStr}${swappedTimeInfo}** afin de libérer le **${oldDateStr}** pour **${result.campaign.title}** (qui n'avait qu'un seul jour possible).\nLes deux tables peuvent ainsi jouer ! 🎉`
-    );
-
-    // Notifie la table confirmée
-    const dateStr = formatFullDateFR(result.campaign.confirmedDateISO);
-    const timeInfo = result.campaign.time ? ` à ${result.campaign.time}` : '';
-    await sendRolePing(
+    afterReply.push(() => sendRolePing(
       client,
       guildId,
       result.campaign,
       `Session validée pour **${result.campaign.title}** : **${dateStr}${timeInfo}**.`
-    );
+    ));
+  } else if (result.event === 'AUTO_CONFIRMED_WITH_SWAP') {
+    const oldDateStr = formatFullDateFR(result.swappedOldDateISO);
+    const newDateStr = formatFullDateFR(result.swappedNewDateISO);
+    const swappedTimeInfo = result.swappedCampaign.time ? ` à ${result.swappedCampaign.time}` : '';
+    const dateStr = formatFullDateFR(result.campaign.confirmedDateISO);
+    const timeInfo = result.campaign.time ? ` à ${result.campaign.time}` : '';
 
     await interaction.editReply({
       content: `Session validée : **${dateStr}${timeInfo}** *(planning optimisé avec ${result.swappedCampaign.title})*.`,
       components: []
     });
+
+    // Notifie la table déplacée en expliquant l'arbitrage automatique
+    afterReply.push(() => sendRolePing(
+      client,
+      guildId,
+      result.swappedCampaign,
+      `🔄 **Ajustement de planning automatique :**\nLa session de **${result.swappedCampaign.title}** a été déplacée au **${newDateStr}${swappedTimeInfo}** afin de libérer le **${oldDateStr}** pour **${result.campaign.title}** (qui n'avait qu'un seul jour possible).\nLes deux tables peuvent ainsi jouer ! 🎉`
+    ));
+    // Notifie la table confirmée
+    afterReply.push(() => sendRolePing(
+      client,
+      guildId,
+      result.campaign,
+      `Session validée pour **${result.campaign.title}** : **${dateStr}${timeInfo}**.`
+    ));
   } else if (result.event === 'SHIFTED_NEXT_WEEK') {
     const startDateISO = result.campaign.startDateISO || result.campaign.weekMondayISO || getMondayISO();
     const nextDays = getRollingDays(startDateISO, 14);
@@ -778,19 +753,13 @@ async function processVoteSubmissionLocked(client, interaction, guildId, campaig
     } else if (result.conflictReason === 'NO_COMMON_HOURS') {
       pingMsg = `⏰ **Pas de créneau de ${SESSION_MINUTES / 60}h commun** entre les joueurs sur les jours communs.\n${pingMsg}`;
     }
-    await sendRolePing(
-      client,
-      guildId,
-      result.campaign,
-      pingMsg
-    );
     const updatedPanel = buildPlayerVotePanel(result.campaign, interaction.user.id);
     await interaction.editReply({
       ...updatedPanel,
       content: `**${result.campaign.title}** — Du ${nextDays[0].fullLabel} au ${nextDays[13].fullLabel}`
     });
+    afterReply.push(() => sendRolePing(client, guildId, result.campaign, pingMsg));
   } else if (result.event === 'UNAVAILABLE_2_WEEKS') {
-    await deleteCampaignPing(client, guildId, result.campaign);
     const untilStr = formatDayMonthFR(result.campaign.unavailableUntilISO);
     let msg = `Joueurs non disponibles jusqu'au ${untilStr}.`;
     if (result.conflictReason === 'DATE_ALREADY_TAKEN' && result.conflictingCampaignNames?.length > 0) {
@@ -802,11 +771,18 @@ async function processVoteSubmissionLocked(client, interaction, guildId, campaig
       content: msg,
       components: []
     });
+    afterReply.push(() => deleteCampaignPing(client, guildId, result.campaign));
   } else {
     await interaction.editReply({
       content: `Disponibilités enregistrées pour **${result.campaign.title}**.`,
       components: []
     });
+  }
+
+  // Affiche avant les pings, comme avant : le ping arrive sur une affiche déjà à jour
+  await refreshDashboardMessage(client, guildId);
+  for (const task of afterReply) {
+    await task();
   }
 }
 
@@ -814,7 +790,9 @@ async function processVoteSubmissionLocked(client, interaction, guildId, campaig
  * Gère toutes les interactions Discord
  */
 async function handleInteraction(client, interaction) {
+  // Trace d'abord (elle chronomètre les vrais appels réseau), puis accusé paresseux par-dessus
   const trace = traceInteraction(interaction);
+  installLazyDefer(interaction, err => logDiag(`[LazyDefer] Échec de l'accusé automatique : ${err?.message}`));
   try {
     await handleInteractionInner(client, interaction, trace);
     trace.step('handler terminé');
@@ -836,8 +814,8 @@ async function handleInteractionInner(client, interaction, trace) {
         const channel = interaction.options.getChannel('salon', true);
         await interaction.deferReply({ flags: MessageFlags.Ephemeral });
         setGuildChannel(guildId, channel.id, null);
-        await refreshDashboardMessage(client, guildId);
         await interaction.editReply({ content: `Salon configuré sur <#${channel.id}>.` });
+        await refreshDashboardMessage(client, guildId);
         return;
       }
 
@@ -905,13 +883,13 @@ async function handleInteractionInner(client, interaction, trace) {
           bannerChannelId
         });
 
-        // Mise à jour de l'affiche uniquement, sans poster de message supplémentaire dans le salon
-        await refreshDashboardMessage(client, guildId);
-
         await interaction.editReply({
           content: `Table **${campaign.title}** créée avec le rôle <@&${role.id}>.`,
           allowedMentions: { parse: [] }
         });
+
+        // Mise à jour de l'affiche uniquement, sans poster de message supplémentaire dans le salon
+        await refreshDashboardMessage(client, guildId);
         return;
       }
 
@@ -934,11 +912,11 @@ async function handleInteractionInner(client, interaction, trace) {
         const member = interaction.guild.members.cache.get(newMjUser.id);
         const mjName = member ? member.displayName : newMjUser.username;
         updateCampaignConfig(guildId, target.id, { mjId: newMjUser.id, mjName });
-        await refreshDashboardMessage(client, guildId);
         await interaction.editReply({
           content: `Le nouveau MJ de **${target.title}** est maintenant <@${newMjUser.id}>.`,
           allowedMentions: { parse: [] }
         });
+        await refreshDashboardMessage(client, guildId);
         return;
       }
 
@@ -981,20 +959,21 @@ async function handleInteractionInner(client, interaction, trace) {
     if (interaction.isButton() && interaction.customId.startsWith('vote_open:')) {
       const campaignId = interaction.customId.split(':')[1];
       const guildId = interaction.guildId;
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
       trace.step('chargement de la table');
-      const { campaign } = await loadCampaignForReply(client, interaction, guildId, campaignId);
+      const { campaign } = await ensureCampaignLoaded(client, guildId, campaignId, interaction.message);
       trace.step(campaign ? 'table chargée' : 'table introuvable');
 
       if (!campaign) {
-        await respondEphemeral(interaction, {
+        await interaction.editReply({
           content: 'Cette table n’existe plus. Vous pouvez en créer une nouvelle avec `/jdr creer`.'
         });
         return;
       }
 
       if (!isUserInRole(interaction, campaign)) {
-        await respondEphemeral(interaction, {
+        await interaction.editReply({
           content: `Seuls les joueurs possédant le rôle <@&${campaign.roleId}> peuvent voter sur cette table.`,
           allowedMentions: { parse: [] }
         });
@@ -1004,21 +983,21 @@ async function handleInteractionInner(client, interaction, trace) {
       if (campaign.status === 'confirmed' && campaign.confirmedDateISO) {
         const dateStr = formatFullDateFR(campaign.confirmedDateISO);
         const timeInfo = campaign.time ? ` à ${campaign.time}` : '';
-        await respondEphemeral(interaction, {
+        await interaction.editReply({
           content: `La prochaine session pour **${campaign.title}** est déjà fixée au **${dateStr}${timeInfo}**.`
         });
         return;
       }
 
       if (campaign.status === 'paused') {
-        await respondEphemeral(interaction, {
+        await interaction.editReply({
           content: `La table **${campaign.title}** est actuellement en pause. Le MJ préviendra lors de la reprise des sessions !`
         });
         return;
       }
 
       if (campaign.status === 'prep') {
-        await respondEphemeral(interaction, {
+        await interaction.editReply({
           content: `Le MJ est actuellement en **préparation de session** pour **${campaign.title}**. Le sondage sera lancé dès qu'il sera prêt !`
         });
         return;
@@ -1026,14 +1005,14 @@ async function handleInteractionInner(client, interaction, trace) {
 
       if (campaign.status === 'unavailable' && campaign.unavailableUntilISO) {
         const untilStr = formatDayMonthFR(campaign.unavailableUntilISO);
-        await respondEphemeral(interaction, {
+        await interaction.editReply({
           content: `Les joueurs ne sont pas disponibles pour **${campaign.title}** jusqu'au **${untilStr}**. Le MJ peut relancer le sondage à tout moment via son espace MJ.`
         });
         return;
       }
 
       if (campaign.status !== 'poll') {
-        await respondEphemeral(interaction, {
+        await interaction.editReply({
           content: `Aucun sondage en cours pour **${campaign.title}**.`
         });
         return;
@@ -1041,27 +1020,28 @@ async function handleInteractionInner(client, interaction, trace) {
 
       draftSelections.delete(getDraftKey(campaign.id, interaction.user.id));
       const playerPanel = buildPlayerVotePanel(campaign, interaction.user.id);
-      await respondEphemeral(interaction, playerPanel);
+      await interaction.editReply(playerPanel);
       return;
     }
 
     if (interaction.isButton() && interaction.customId.startsWith('mj_open:')) {
       const campaignId = interaction.customId.split(':')[1];
       const guildId = interaction.guildId;
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
       trace.step('chargement de la table');
-      const { guildData, campaign } = await loadCampaignForReply(client, interaction, guildId, campaignId);
+      const { guildData, campaign } = await ensureCampaignLoaded(client, guildId, campaignId, interaction.message);
       trace.step(campaign ? 'table chargée' : 'table introuvable');
 
       if (!campaign) {
-        await respondEphemeral(interaction, {
+        await interaction.editReply({
           content: 'Cette table n’existe plus. Vous pouvez en créer une nouvelle avec `/jdr creer`.'
         });
         return;
       }
 
       if (!isUserMJ(interaction, campaign)) {
-        await respondEphemeral(interaction, {
+        await interaction.editReply({
           content: `Action réservée au MJ de cette table (<@${campaign.mjId}>) ou à un administrateur.`,
           allowedMentions: { parse: [] }
         });
@@ -1070,7 +1050,7 @@ async function handleInteractionInner(client, interaction, trace) {
 
       const mjPanel = buildMJControlPanel(campaign, guildData.campaigns);
       trace.step('panneau MJ construit');
-      await respondEphemeral(interaction, mjPanel);
+      await interaction.editReply(mjPanel);
       return;
     }
 
@@ -1080,18 +1060,19 @@ async function handleInteractionInner(client, interaction, trace) {
     if (interaction.isStringSelectMenu() && interaction.customId === 'select_campaign') {
       const guildId = interaction.guildId;
       const campaignId = interaction.values[0];
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
-      const { campaign } = await loadCampaignForReply(client, interaction, guildId, campaignId);
+      const { campaign } = await ensureCampaignLoaded(client, guildId, campaignId, interaction.message);
 
       if (!campaign) {
-        await respondEphemeral(interaction, {
+        await interaction.editReply({
           content: 'Cette table n’existe plus. Vous pouvez en créer une nouvelle avec `/jdr creer`.'
         });
         return;
       }
 
       if (!isUserInRole(interaction, campaign)) {
-        await respondEphemeral(interaction, {
+        await interaction.editReply({
           content: `Seuls les joueurs possédant le rôle <@&${campaign.roleId}> peuvent voter sur cette table.`,
           allowedMentions: { parse: [] }
         });
@@ -1099,7 +1080,7 @@ async function handleInteractionInner(client, interaction, trace) {
       }
 
       if (campaign.status !== 'poll') {
-        await respondEphemeral(interaction, {
+        await interaction.editReply({
           content: `Aucun sondage en cours pour **${campaign.title}**.`
         });
         return;
@@ -1107,7 +1088,7 @@ async function handleInteractionInner(client, interaction, trace) {
 
       draftSelections.delete(getDraftKey(campaign.id, interaction.user.id));
       const playerPanel = buildPlayerVotePanel(campaign, interaction.user.id);
-      await respondEphemeral(interaction, playerPanel);
+      await interaction.editReply(playerPanel);
       return;
     }
 
@@ -1425,11 +1406,11 @@ async function handleInteractionInner(client, interaction, trace) {
     // =========================================================================
     if (interaction.isButton() && interaction.customId === 'open_mj_menu') {
       const guildId = interaction.guildId;
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
       let { guild: guildData } = getGuildState(guildId);
 
       if (!guildData.campaigns || guildData.campaigns.length === 0) {
-        // Restauration depuis Discord nécessaire : peut dépasser 3 s, on diffère d'abord
-        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
         const restored = await restoreBackupFromDiscord(client, guildId);
         if (restored) guildData = restored;
       }
@@ -1448,7 +1429,7 @@ async function handleInteractionInner(client, interaction, trace) {
       );
 
       if (mjCampaigns.length === 0) {
-        await respondEphemeral(interaction, {
+        await interaction.editReply({
           content: 'Seul le MJ d’une table (ou un administrateur) peut accéder à cet espace.'
         });
         return;
@@ -1456,7 +1437,7 @@ async function handleInteractionInner(client, interaction, trace) {
 
       if (mjCampaigns.length === 1) {
         const mjPanel = buildMJControlPanel(mjCampaigns[0], guildData.campaigns);
-        await respondEphemeral(interaction, mjPanel);
+        await interaction.editReply(mjPanel);
         return;
       }
 
@@ -1470,7 +1451,7 @@ async function handleInteractionInner(client, interaction, trace) {
           }))
         );
 
-      await respondEphemeral(interaction, {
+      await interaction.editReply({
         components: [new ActionRowBuilder().addComponents(selectMjTable)]
       });
       return;
@@ -1527,25 +1508,26 @@ async function handleInteractionInner(client, interaction, trace) {
       }
 
       const updated = setResult.campaign;
-      await refreshDashboardMessage(client, guildId);
-
       const dateStr = formatFullDateFR(updated.confirmedDateISO);
       const timeInfo = updated.time ? ` à ${updated.time}` : '';
+
+      const { guild: freshGuild } = getGuildState(guildId);
+      const freshCampaign = freshGuild.campaigns.find(c => c.id === campaignId);
+      const updatedPanel = buildMJControlPanel(freshCampaign, freshGuild.campaigns);
+
+      // Réponse au MJ d'abord (moins de 3 s), puis affiche et annonce publique
+      await interaction.editReply({
+        ...updatedPanel,
+        content: `✅ Date fixée au **${dateStr}${timeInfo}** pour **${updated.title}**.\nVous pouvez ajuster l’heure ci-dessous si besoin :`
+      });
+
+      await refreshDashboardMessage(client, guildId);
       await sendRolePing(
         client,
         guildId,
         updated,
         `Session fixée pour **${updated.title}** : **${dateStr}${timeInfo}**.`
       );
-
-      const { guild: freshGuild } = getGuildState(guildId);
-      const freshCampaign = freshGuild.campaigns.find(c => c.id === campaignId);
-      const updatedPanel = buildMJControlPanel(freshCampaign, freshGuild.campaigns);
-
-      await interaction.editReply({
-        ...updatedPanel,
-        content: `✅ Date fixée au **${dateStr}${timeInfo}** pour **${updated.title}**.\nVous pouvez ajuster l’heure ci-dessous si besoin :`
-      });
       });
       return;
     }
@@ -1595,7 +1577,6 @@ async function handleInteractionInner(client, interaction, trace) {
 
       await runExclusive(`mutation:${guildId}`, async () => {
         updateCampaignConfig(guildId, campaignId, { time: cleanTime });
-        await refreshDashboardMessage(client, guildId);
 
         const { guild: freshGuild } = getGuildState(guildId);
         const freshCampaign = freshGuild.campaigns.find(c => c.id === campaignId);
@@ -1609,6 +1590,7 @@ async function handleInteractionInner(client, interaction, trace) {
           ...updatedPanel,
           content: `✅ Heure fixée à **${cleanTime}**${dateStr} (**${freshCampaign.title}**) !\n${updatedPanel.content}`
         });
+        await refreshDashboardMessage(client, guildId);
       });
       return;
     }
@@ -1660,12 +1642,12 @@ async function handleInteractionInner(client, interaction, trace) {
 
       await runExclusive(`mutation:${guildId}`, async () => {
         updateCampaignConfig(guildId, campaignId, { time: cleanTime });
-        await refreshDashboardMessage(client, guildId);
 
         const dateStr = campaign.confirmedDateISO ? ` pour ${formatFullDateFR(campaign.confirmedDateISO)}` : '';
         await interaction.editReply({
-          content: `✅ Heure fixée à **${cleanTime}**${dateStr} (**${campaign.title}**).\nL'affiche et les événements Discord ont été mis à jour !`
+          content: `✅ Heure fixée à **${cleanTime}**${dateStr} (**${campaign.title}**).\nL'affiche et les événements Discord vont être mis à jour.`
         });
+        await refreshDashboardMessage(client, guildId);
       });
       return;
     }
@@ -1728,42 +1710,35 @@ async function handleInteractionInner(client, interaction, trace) {
       }
 
       if (action === 'mj_pause') {
-        await deleteCampaignPing(client, guildId, campaign);
         const updated = setCampaignStatus(guildId, campaignId, 'paused');
-        await refreshDashboardMessage(client, guildId);
         const { guild: freshGuild } = getGuildState(guildId);
         const updatedPanel = buildMJControlPanel(updated, freshGuild.campaigns);
         await interaction.editReply({
           ...updatedPanel,
           content: `⏸️ Table **${updated.title}** mise en pause. Le sondage est arrêté et l'affiche indique la pause.\n${updatedPanel.content}`
         });
+        await deleteCampaignPing(client, guildId, campaign);
+        await refreshDashboardMessage(client, guildId);
         return;
       }
 
       if (action === 'mj_prep') {
-        await deleteCampaignPing(client, guildId, campaign);
         const updated = setCampaignStatus(guildId, campaignId, 'prep');
-        await refreshDashboardMessage(client, guildId);
         const { guild: freshGuild } = getGuildState(guildId);
         const updatedPanel = buildMJControlPanel(updated, freshGuild.campaigns);
         await interaction.editReply({
           ...updatedPanel,
           content: `📝 Table **${updated.title}** passée en **Préparation MJ en cours**. L'affiche a été mise à jour.\n${updatedPanel.content}`
         });
+        await deleteCampaignPing(client, guildId, campaign);
+        await refreshDashboardMessage(client, guildId);
         return;
       }
 
       if (action === 'mj_resume_poll') {
         const updated = setCampaignStatus(guildId, campaignId, 'poll');
-        await refreshDashboardMessage(client, guildId);
         const startDateISO = updated.startDateISO || updated.weekMondayISO || getMondayISO();
         const weekDays = getRollingDays(startDateISO, 14);
-        await sendRolePing(
-          client,
-          guildId,
-          updated,
-          `Sondage de disponibilité ouvert pour **${updated.title}** (du ${weekDays[0].fullLabel} au ${weekDays[13].fullLabel}).`
-        );
         const { guild: freshGuild } = getGuildState(guildId);
         const freshCampaign = freshGuild.campaigns.find(c => c.id === campaignId) || updated;
         const updatedPanel = buildMJControlPanel(freshCampaign, freshGuild.campaigns);
@@ -1771,20 +1746,20 @@ async function handleInteractionInner(client, interaction, trace) {
           ...updatedPanel,
           content: `▶️ Sondage lancé pour **${updated.title}** (du ${weekDays[0].fullLabel} au ${weekDays[13].fullLabel}).\n${updatedPanel.content}`
         });
+        await refreshDashboardMessage(client, guildId);
+        await sendRolePing(
+          client,
+          guildId,
+          updated,
+          `Sondage de disponibilité ouvert pour **${updated.title}** (du ${weekDays[0].fullLabel} au ${weekDays[13].fullLabel}).`
+        );
         return;
       }
 
       if (action === 'mj_restart_poll') {
         const updated = restartCampaignPoll(guildId, campaignId, { nextWeek: false });
-        await refreshDashboardMessage(client, guildId);
         const startDateISO = updated.startDateISO || updated.weekMondayISO || getMondayISO();
         const weekDays = getRollingDays(startDateISO, 14);
-        await sendRolePing(
-          client,
-          guildId,
-          updated,
-          `Nouveau sondage de disponibilité pour **${updated.title}** (du ${weekDays[0].fullLabel} au ${weekDays[13].fullLabel}).`
-        );
         const { guild: freshGuild } = getGuildState(guildId);
         const freshCampaign = freshGuild.campaigns.find(c => c.id === campaignId) || updated;
         const updatedPanel = buildMJControlPanel(freshCampaign, freshGuild.campaigns);
@@ -1792,20 +1767,20 @@ async function handleInteractionInner(client, interaction, trace) {
           ...updatedPanel,
           content: `🔄 Sondage relancé pour **${updated.title}** (du ${weekDays[0].fullLabel} au ${weekDays[13].fullLabel}).\n${updatedPanel.content}`
         });
-        return;
-      }
-
-      if (action === 'mj_session_done') {
-        const updated = restartCampaignPoll(guildId, campaignId, { nextWeek: false });
         await refreshDashboardMessage(client, guildId);
-        const startDateISO = updated.startDateISO || updated.weekMondayISO || getMondayISO();
-        const weekDays = getRollingDays(startDateISO, 14);
         await sendRolePing(
           client,
           guildId,
           updated,
           `Nouveau sondage de disponibilité pour **${updated.title}** (du ${weekDays[0].fullLabel} au ${weekDays[13].fullLabel}).`
         );
+        return;
+      }
+
+      if (action === 'mj_session_done') {
+        const updated = restartCampaignPoll(guildId, campaignId, { nextWeek: false });
+        const startDateISO = updated.startDateISO || updated.weekMondayISO || getMondayISO();
+        const weekDays = getRollingDays(startDateISO, 14);
         const { guild: freshGuild } = getGuildState(guildId);
         const freshCampaign = freshGuild.campaigns.find(c => c.id === campaignId) || updated;
         const updatedPanel = buildMJControlPanel(freshCampaign, freshGuild.campaigns);
@@ -1813,13 +1788,18 @@ async function handleInteractionInner(client, interaction, trace) {
           ...updatedPanel,
           content: `✅ Session terminée ! Nouveau sondage lancé du **${weekDays[0].fullLabel}** au **${weekDays[13].fullLabel}**.\n${updatedPanel.content}`
         });
+        await refreshDashboardMessage(client, guildId);
+        await sendRolePing(
+          client,
+          guildId,
+          updated,
+          `Nouveau sondage de disponibilité pour **${updated.title}** (du ${weekDays[0].fullLabel} au ${weekDays[13].fullLabel}).`
+        );
         return;
       }
 
       if (action === 'mj_clear_date') {
-        await deleteCampaignPing(client, guildId, campaign);
         const updated = clearSessionDate(guildId, campaignId);
-        await refreshDashboardMessage(client, guildId);
         const { guild: freshGuild } = getGuildState(guildId);
         const freshCampaign = freshGuild.campaigns.find(c => c.id === campaignId) || updated;
         const updatedPanel = buildMJControlPanel(freshCampaign, freshGuild.campaigns);
@@ -1827,18 +1807,20 @@ async function handleInteractionInner(client, interaction, trace) {
           ...updatedPanel,
           content: `🗑️ Date retirée pour **${updated.title}**. Le sondage est de nouveau ouvert.\n${updatedPanel.content}`
         });
+        await deleteCampaignPing(client, guildId, campaign);
+        await refreshDashboardMessage(client, guildId);
         return;
       }
 
       if (action === 'mj_delete') {
-        await deleteCampaignPing(client, guildId, campaign);
-        await removeCampaignEvent(client, guildId, campaign);
         const removed = deleteCampaign(guildId, campaignId);
-        await refreshDashboardMessage(client, guildId);
         await interaction.editReply({
           content: `Table **${removed ? removed.title : ''}** supprimée.`,
           components: []
         });
+        await deleteCampaignPing(client, guildId, campaign);
+        await removeCampaignEvent(client, guildId, campaign);
+        await refreshDashboardMessage(client, guildId);
         return;
       }
       });
