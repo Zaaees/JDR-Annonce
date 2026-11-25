@@ -31,12 +31,28 @@ if (!token) {
   process.exit(1);
 }
 
+// Au-delà de cette attente imposée par Discord, une réponse d'interaction est abandonnée :
+// le jeton d'interaction expire au bout de 15 min, attendre plus longtemps ne sert à rien
+// et laissait le message bloqué sur « réfléchit… ».
+const MAX_INTERACTION_RATE_LIMIT_WAIT_MS = 10 * 1000;
+
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMembers,
     GatewayIntentBits.GuildMessages
-  ]
+  ],
+  rest: {
+    rejectOnRateLimit: info => {
+      const wait = Math.max(info.retryAfter || 0, info.timeToReset || 0);
+      const isInteractionResponse = info.route.startsWith('/webhooks/') || info.route.startsWith('/interactions/');
+      if (isInteractionResponse && wait > MAX_INTERACTION_RATE_LIMIT_WAIT_MS) {
+        logDiag(`[REST 429] Réponse d'interaction abandonnée : ${info.method.toUpperCase()} ${info.route} attente imposée ${Math.round(wait / 1000)}s (scope=${info.scope}, global=${info.global})`);
+        return true;
+      }
+      return false;
+    }
+  }
 });
 
 const BOOT_TIME = new Date().toISOString();
@@ -163,7 +179,13 @@ client.rest.on('rateLimited', info => {
 
 // Diagnostic : chaque réponse HTTP de Discord (route générique, sans jeton d'interaction)
 client.rest.on('response', (request, response) => {
-  logDiag(`[REST] ${request.method.toUpperCase()} ${request.route} -> ${response.status} (essai ${request.retries + 1})`);
+  let line = `[REST] ${request.method.toUpperCase()} ${request.route} -> ${response.status} (essai ${request.retries + 1})`;
+  if (response.status === 429) {
+    const h = response.headers;
+    line += ` retry-after=${h.get('retry-after')} reset-after=${h.get('x-ratelimit-reset-after')}` +
+      ` scope=${h.get('x-ratelimit-scope')} global=${h.get('x-ratelimit-global')} bucket=${h.get('x-ratelimit-bucket')}`;
+  }
+  logDiag(line);
 });
 
 // Si les rôles d'un membre changent (ajout/retrait d'un joueur dans un @Rôle JDR), met à jour le tableau

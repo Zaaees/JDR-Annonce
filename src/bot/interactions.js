@@ -93,6 +93,32 @@ async function ensureCampaignLoaded(client, guildId, campaignId, fallbackMessage
   return { guildData, campaign };
 }
 
+/**
+ * Charge une table pour un panneau éphémère en évitant l'accusé « réfléchit… » quand c'est possible.
+ * Si la table est déjà en mémoire, on répondra directement (un seul appel, sans editReply) :
+ * Discord renvoie parfois un 429 de près d'une heure sur l'édition d'une réponse différée,
+ * ce qui laissait le message bloqué sur « réfléchit… ».
+ * Sinon (redémarrage, restauration depuis Discord nécessaire), on diffère avant de charger.
+ */
+async function loadCampaignForReply(client, interaction, guildId, campaignId) {
+  const { guild: guildData } = getGuildState(guildId);
+  const campaign = guildData.campaigns.find(c => c.id === campaignId);
+  if (campaign) return { guildData, campaign };
+
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  return ensureCampaignLoaded(client, guildId, campaignId, interaction.message);
+}
+
+/**
+ * Envoie un panneau éphémère : réponse directe si rien n'a encore été envoyé, sinon édition du différé.
+ */
+async function respondEphemeral(interaction, payload) {
+  if (interaction.deferred || interaction.replied) {
+    return interaction.editReply(payload);
+  }
+  return interaction.reply({ ...payload, flags: MessageFlags.Ephemeral });
+}
+
 function getOrInitDraft(campaign, userId) {
   const key = getDraftKey(campaign.id, userId);
   if (!draftSelections.has(key)) {
@@ -955,21 +981,20 @@ async function handleInteractionInner(client, interaction, trace) {
     if (interaction.isButton() && interaction.customId.startsWith('vote_open:')) {
       const campaignId = interaction.customId.split(':')[1];
       const guildId = interaction.guildId;
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
       trace.step('chargement de la table');
-      const { campaign } = await ensureCampaignLoaded(client, guildId, campaignId, interaction.message);
+      const { campaign } = await loadCampaignForReply(client, interaction, guildId, campaignId);
       trace.step(campaign ? 'table chargée' : 'table introuvable');
 
       if (!campaign) {
-        await interaction.editReply({
+        await respondEphemeral(interaction, {
           content: 'Cette table n’existe plus. Vous pouvez en créer une nouvelle avec `/jdr creer`.'
         });
         return;
       }
 
       if (!isUserInRole(interaction, campaign)) {
-        await interaction.editReply({
+        await respondEphemeral(interaction, {
           content: `Seuls les joueurs possédant le rôle <@&${campaign.roleId}> peuvent voter sur cette table.`,
           allowedMentions: { parse: [] }
         });
@@ -979,21 +1004,21 @@ async function handleInteractionInner(client, interaction, trace) {
       if (campaign.status === 'confirmed' && campaign.confirmedDateISO) {
         const dateStr = formatFullDateFR(campaign.confirmedDateISO);
         const timeInfo = campaign.time ? ` à ${campaign.time}` : '';
-        await interaction.editReply({
+        await respondEphemeral(interaction, {
           content: `La prochaine session pour **${campaign.title}** est déjà fixée au **${dateStr}${timeInfo}**.`
         });
         return;
       }
 
       if (campaign.status === 'paused') {
-        await interaction.editReply({
+        await respondEphemeral(interaction, {
           content: `La table **${campaign.title}** est actuellement en pause. Le MJ préviendra lors de la reprise des sessions !`
         });
         return;
       }
 
       if (campaign.status === 'prep') {
-        await interaction.editReply({
+        await respondEphemeral(interaction, {
           content: `Le MJ est actuellement en **préparation de session** pour **${campaign.title}**. Le sondage sera lancé dès qu'il sera prêt !`
         });
         return;
@@ -1001,14 +1026,14 @@ async function handleInteractionInner(client, interaction, trace) {
 
       if (campaign.status === 'unavailable' && campaign.unavailableUntilISO) {
         const untilStr = formatDayMonthFR(campaign.unavailableUntilISO);
-        await interaction.editReply({
+        await respondEphemeral(interaction, {
           content: `Les joueurs ne sont pas disponibles pour **${campaign.title}** jusqu'au **${untilStr}**. Le MJ peut relancer le sondage à tout moment via son espace MJ.`
         });
         return;
       }
 
       if (campaign.status !== 'poll') {
-        await interaction.editReply({
+        await respondEphemeral(interaction, {
           content: `Aucun sondage en cours pour **${campaign.title}**.`
         });
         return;
@@ -1016,28 +1041,27 @@ async function handleInteractionInner(client, interaction, trace) {
 
       draftSelections.delete(getDraftKey(campaign.id, interaction.user.id));
       const playerPanel = buildPlayerVotePanel(campaign, interaction.user.id);
-      await interaction.editReply(playerPanel);
+      await respondEphemeral(interaction, playerPanel);
       return;
     }
 
     if (interaction.isButton() && interaction.customId.startsWith('mj_open:')) {
       const campaignId = interaction.customId.split(':')[1];
       const guildId = interaction.guildId;
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
       trace.step('chargement de la table');
-      const { guildData, campaign } = await ensureCampaignLoaded(client, guildId, campaignId, interaction.message);
+      const { guildData, campaign } = await loadCampaignForReply(client, interaction, guildId, campaignId);
       trace.step(campaign ? 'table chargée' : 'table introuvable');
 
       if (!campaign) {
-        await interaction.editReply({
+        await respondEphemeral(interaction, {
           content: 'Cette table n’existe plus. Vous pouvez en créer une nouvelle avec `/jdr creer`.'
         });
         return;
       }
 
       if (!isUserMJ(interaction, campaign)) {
-        await interaction.editReply({
+        await respondEphemeral(interaction, {
           content: `Action réservée au MJ de cette table (<@${campaign.mjId}>) ou à un administrateur.`,
           allowedMentions: { parse: [] }
         });
@@ -1046,7 +1070,7 @@ async function handleInteractionInner(client, interaction, trace) {
 
       const mjPanel = buildMJControlPanel(campaign, guildData.campaigns);
       trace.step('panneau MJ construit');
-      await interaction.editReply(mjPanel);
+      await respondEphemeral(interaction, mjPanel);
       return;
     }
 
@@ -1056,19 +1080,18 @@ async function handleInteractionInner(client, interaction, trace) {
     if (interaction.isStringSelectMenu() && interaction.customId === 'select_campaign') {
       const guildId = interaction.guildId;
       const campaignId = interaction.values[0];
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
-      const { campaign } = await ensureCampaignLoaded(client, guildId, campaignId, interaction.message);
+      const { campaign } = await loadCampaignForReply(client, interaction, guildId, campaignId);
 
       if (!campaign) {
-        await interaction.editReply({
+        await respondEphemeral(interaction, {
           content: 'Cette table n’existe plus. Vous pouvez en créer une nouvelle avec `/jdr creer`.'
         });
         return;
       }
 
       if (!isUserInRole(interaction, campaign)) {
-        await interaction.editReply({
+        await respondEphemeral(interaction, {
           content: `Seuls les joueurs possédant le rôle <@&${campaign.roleId}> peuvent voter sur cette table.`,
           allowedMentions: { parse: [] }
         });
@@ -1076,7 +1099,7 @@ async function handleInteractionInner(client, interaction, trace) {
       }
 
       if (campaign.status !== 'poll') {
-        await interaction.editReply({
+        await respondEphemeral(interaction, {
           content: `Aucun sondage en cours pour **${campaign.title}**.`
         });
         return;
@@ -1084,7 +1107,7 @@ async function handleInteractionInner(client, interaction, trace) {
 
       draftSelections.delete(getDraftKey(campaign.id, interaction.user.id));
       const playerPanel = buildPlayerVotePanel(campaign, interaction.user.id);
-      await interaction.editReply(playerPanel);
+      await respondEphemeral(interaction, playerPanel);
       return;
     }
 
@@ -1402,11 +1425,11 @@ async function handleInteractionInner(client, interaction, trace) {
     // =========================================================================
     if (interaction.isButton() && interaction.customId === 'open_mj_menu') {
       const guildId = interaction.guildId;
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-
       let { guild: guildData } = getGuildState(guildId);
 
       if (!guildData.campaigns || guildData.campaigns.length === 0) {
+        // Restauration depuis Discord nécessaire : peut dépasser 3 s, on diffère d'abord
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
         const restored = await restoreBackupFromDiscord(client, guildId);
         if (restored) guildData = restored;
       }
@@ -1425,7 +1448,7 @@ async function handleInteractionInner(client, interaction, trace) {
       );
 
       if (mjCampaigns.length === 0) {
-        await interaction.editReply({
+        await respondEphemeral(interaction, {
           content: 'Seul le MJ d’une table (ou un administrateur) peut accéder à cet espace.'
         });
         return;
@@ -1433,7 +1456,7 @@ async function handleInteractionInner(client, interaction, trace) {
 
       if (mjCampaigns.length === 1) {
         const mjPanel = buildMJControlPanel(mjCampaigns[0], guildData.campaigns);
-        await interaction.editReply(mjPanel);
+        await respondEphemeral(interaction, mjPanel);
         return;
       }
 
@@ -1447,7 +1470,7 @@ async function handleInteractionInner(client, interaction, trace) {
           }))
         );
 
-      await interaction.editReply({
+      await respondEphemeral(interaction, {
         components: [new ActionRowBuilder().addComponents(selectMjTable)]
       });
       return;
