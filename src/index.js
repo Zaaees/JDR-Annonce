@@ -23,6 +23,7 @@ const {
   getWeekDaysFromMonday
 } = require('./utils/dates');
 const { handleCropHttp } = require('./server/cropServer');
+const { logDiag, recentLogs } = require('./utils/diag');
 
 const token = process.env.DISCORD_TOKEN;
 if (!token) {
@@ -39,13 +40,6 @@ const client = new Client({
 });
 
 const BOOT_TIME = new Date().toISOString();
-const recentLogs = [];
-function logDiag(msg) {
-  const line = `[${new Date().toISOString()}] ${msg}`;
-  console.log(line);
-  recentLogs.push(line);
-  if (recentLogs.length > 50) recentLogs.shift();
-}
 
 let lastRestProbe = null;
 async function probeDiscordRest() {
@@ -165,6 +159,11 @@ client.on(Events.Debug, info => {
 
 client.rest.on('rateLimited', info => {
   logDiag(`[REST 429] route=${info.route} retryAfter=${info.retryAfter}ms global=${info.global}`);
+});
+
+// Diagnostic : chaque réponse HTTP de Discord (route générique, sans jeton d'interaction)
+client.rest.on('response', (request, response) => {
+  logDiag(`[REST] ${request.method.toUpperCase()} ${request.route} -> ${response.status} (essai ${request.retries + 1})`);
 });
 
 // Si les rôles d'un membre changent (ajout/retrait d'un joueur dans un @Rôle JDR), met à jour le tableau

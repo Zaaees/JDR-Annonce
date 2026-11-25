@@ -43,6 +43,7 @@ const {
 const { createCropSession } = require('../server/cropServer');
 const { restoreBackupFromDiscord } = require('../storage/discordBackup');
 const { runExclusive } = require('../utils/mutex');
+const { traceInteraction } = require('../utils/diag');
 const { campaignsConflict } = require('../utils/schedulingOptimizer');
 const { removeCampaignEvent } = require('./scheduledEvents');
 const {
@@ -787,6 +788,16 @@ async function processVoteSubmissionLocked(client, interaction, guildId, campaig
  * Gère toutes les interactions Discord
  */
 async function handleInteraction(client, interaction) {
+  const trace = traceInteraction(interaction);
+  try {
+    await handleInteractionInner(client, interaction, trace);
+    trace.step('handler terminé');
+  } finally {
+    trace.done();
+  }
+}
+
+async function handleInteractionInner(client, interaction, trace) {
   try {
     // =========================================================================
     // 1. SLASH COMMANDS (/jdr)
@@ -946,7 +957,9 @@ async function handleInteraction(client, interaction) {
       const guildId = interaction.guildId;
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
+      trace.step('chargement de la table');
       const { campaign } = await ensureCampaignLoaded(client, guildId, campaignId, interaction.message);
+      trace.step(campaign ? 'table chargée' : 'table introuvable');
 
       if (!campaign) {
         await interaction.editReply({
@@ -1012,7 +1025,9 @@ async function handleInteraction(client, interaction) {
       const guildId = interaction.guildId;
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
+      trace.step('chargement de la table');
       const { guildData, campaign } = await ensureCampaignLoaded(client, guildId, campaignId, interaction.message);
+      trace.step(campaign ? 'table chargée' : 'table introuvable');
 
       if (!campaign) {
         await interaction.editReply({
@@ -1030,6 +1045,7 @@ async function handleInteraction(client, interaction) {
       }
 
       const mjPanel = buildMJControlPanel(campaign, guildData.campaigns);
+      trace.step('panneau MJ construit');
       await interaction.editReply(mjPanel);
       return;
     }
